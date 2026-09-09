@@ -69,6 +69,10 @@ class Settings(BaseSettings):
     artifacts_dir: Path | None = None
 
     # -- Database ----------------------------------------------------------------------
+    # Unset (``None``) means "use the default file-based SQLite database", filled in by
+    # ``model_post_init`` below - so persistence is ON by default and survives a restart.
+    # Set ``ICU_DATABASE_URL`` to a Postgres URL to swap the backend, or to an empty string
+    # to run with no persistence at all (``build_repository`` treats "" as an opt-out).
     database_url: str | None = None
     db_retention_rows: int = Field(default=20_000, ge=100)
 

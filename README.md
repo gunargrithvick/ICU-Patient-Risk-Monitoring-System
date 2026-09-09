@@ -327,7 +327,7 @@ The values worth knowing:
 | `ICU_TICK_SECONDS` | 2.0 | 0.25–30 |
 | `ICU_SIMULATION_SEED` | 20260905 | Fix it and the ward is reproducible |
 | `ICU_FRAME_SOURCE` / `ICU_DETECTOR` | `auto` / `auto` | `off` disables the channel entirely |
-| `ICU_DATABASE_URL` | *unset* | Unset = in-memory. SQLite gets WAL + foreign keys automatically |
+| `ICU_DATABASE_URL` | *unset* | Unset = a SQLite file at `data/icu_monitor.db` (persists across restarts). Empty string = no persistence. SQLite gets WAL + foreign keys automatically |
 | `pip install -e ".[postgres]"` | — | Install the PostgreSQL driver before using a `postgresql+psycopg://...` URL |
 | `ICU_WEIGHT_NEWS2` / `_ML` / `_VISION` | 0.40 / 0.45 / 0.15 | Renormalised over reporting channels |
 | `ICU_LOG_LEVEL` | `INFO` | Read from the environment directly, so it works before config resolves |
@@ -473,7 +473,11 @@ API on `127.0.0.1:8000`, dashboard on `127.0.0.1:8501`. Both are bound to loopba
 
 The bootstrap step is optional. Skip it and both services run on NEWS2 and vision alone; `/ready` reports the model as unavailable and stays ready. That is a supported state, not a broken one.
 
-The two services each build their own `MonitoringEngine` in-process, so live bed state is per-service. What they share is the ledger: both write the same WAL-journalled SQLite file, so an alert acknowledged in the dashboard shows up in the API's `/api/v1/alerts` history.
+The two services each build their own `MonitoringEngine` in-process, so the *live* tick loop is per-service. What they share is the ledger: both read and write the same WAL-journalled SQLite file. That shared ledger is the source of truth, and it does two things. An alert acknowledged in the dashboard shows up acknowledged in the API's `/api/v1/alerts` history, because the acknowledgement is written to the row, not just to memory. And on startup each service *rehydrates* from it — trend charts, the open-alert wall, and the de-duplication state are restored, so a restart resumes the ward it was watching instead of inventing a fresh synthetic history. Alert ids are the database row's primary key precisely so the two processes agree on which event is which.
+
+### One process is enough
+
+You do not need both. The **dashboard is self-contained** — it drives an engine in its own process and never calls the HTTP API, so running only `streamlit run app.py` is a complete, single-process deployment (this is exactly what the Streamlit Community Cloud target below is). Run the **API alone** when you want a headless JSON feed for another system. Run **both** only when you want a browser dashboard *and* a separate programmatic API against the same ward; the shared ledger is what keeps them consistent. Set `ICU_DATABASE_URL` to an empty string to run any of these with no persistence at all — everything then lives in memory for the life of that one process.
 
 ### A single container
 

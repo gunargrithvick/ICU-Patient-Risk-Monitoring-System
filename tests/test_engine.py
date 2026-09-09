@@ -18,10 +18,13 @@ from datetime import timedelta
 import pytest
 
 from icu_monitor.config import Settings
-from icu_monitor.core.types import RiskLevel, utcnow
+from icu_monitor.core.fusion import fuse_risk
+from icu_monitor.core.news2 import calculate_news2
+from icu_monitor.core.types import Alert, AlertKind, ClinicalState, RiskLevel, utcnow
 from icu_monitor.monitoring import MonitoringEngine, build_engine
+from icu_monitor.storage.repository import Repository
 
-from .conftest import EPOCH
+from .conftest import EPOCH, make_vitals
 
 
 @pytest.fixture
@@ -300,6 +303,126 @@ def test_patient_lookup_is_by_id(engine: MonitoringEngine) -> None:
     known = engine.patients[0].patient_id
     assert engine.patient(known) is not None
     assert engine.patient("P999") is None
+
+
+# ----------------------------------------------------------------- restart & persistence
+
+
+def test_a_restart_restores_the_trend_history(config: Settings) -> None:
+    """A restart resumes the ward it was monitoring instead of starting from a blank chart.
+
+    The writer persists a back-filled run; a fresh engine sharing the same ledger hydrates
+    from it and comes up with the identical per-bed history and score trend, so the first
+    paint after a restart shows the same trend line rather than a single point.
+    """
+    repo = Repository(config=config)
+    writer = MonitoringEngine(config=config, load_vision=False, recorder=repo)
+    try:
+        writer.run(15, backfill=True)
+        pid = writer.patients[0].patient_id
+
+        reader = MonitoringEngine(config=config, load_vision=False)
+        try:
+            assert reader.history(pid) == ()  # nothing until it hydrates
+            assert reader.hydrate(repo) is True
+
+            assert len(reader.history(pid)) == len(writer.history(pid)) == 15
+            reader_scores = [round(score, 6) for _at, score in reader.score_history(pid)]
+            writer_scores = [round(score, 6) for _at, score in writer.score_history(pid)]
+            assert reader_scores == writer_scores
+        finally:
+            reader.close()
+    finally:
+        writer.close()
+        repo.close()
+
+
+def test_hydrate_restores_the_open_alert_ledger_from_storage(config: Settings) -> None:
+    """The open-alert wall and the de-dup state come back too, addressed by the DB id."""
+    repo = Repository(config=config)
+    engine = MonitoringEngine(config=config, load_vision=False)
+    try:
+        pid = engine.patients[0].patient_id
+        patient = engine.patient(pid)
+        vitals = make_vitals(at=EPOCH, spo2=85.0)
+        assessment = fuse_risk(
+            patient_id=pid,
+            vitals=vitals,
+            news2=calculate_news2(vitals, spo2_scale=patient.spo2_scale),
+            config=config,
+        )
+        alert = Alert(
+            patient_id=pid,
+            kind=AlertKind.HYPOXIA,
+            severity=RiskLevel.HIGH,
+            message="SpO₂ 85%",
+            created_at=EPOCH,
+            last_seen_at=EPOCH,
+        )
+        repo.record_tick(patient, vitals, assessment, [alert])
+        assert alert.alert_id is not None  # the DB assigned the id
+
+        assert engine.hydrate(repo) is True
+        open_alerts = engine.alerts.open_alerts
+        assert [(a.patient_id, a.kind) for a in open_alerts] == [(pid, AlertKind.HYPOXIA)]
+        assert open_alerts[0].alert_id == alert.alert_id
+    finally:
+        engine.close()
+        repo.close()
+
+
+def test_hydrate_finds_nothing_in_an_empty_store(config: Settings) -> None:
+    """A first-ever start has nothing to restore, and that is not an error."""
+    repo = Repository(config=config)
+    engine = MonitoringEngine(config=config, load_vision=False)
+    try:
+        assert engine.hydrate(repo) is False
+        assert engine.history(engine.patients[0].patient_id) == ()
+        assert engine.alerts.open_alerts == ()
+    finally:
+        engine.close()
+        repo.close()
+
+
+def test_reset_drops_history_and_alerts_but_keeps_the_beds(engine: MonitoringEngine) -> None:
+    """The Settings-page purge empties the DB; the engine must forget its cached past too.
+
+    Beds and the tick counter are left alone - it is the same ward, it just has no history.
+    """
+    engine.run(6)
+    pid = engine.patients[0].patient_id
+    beds_before = {p.patient_id for p in engine.patients}
+    ticks_before = engine.tick_count
+    assert engine.history(pid)  # populated by the run
+
+    engine.reset()
+
+    assert engine.history(pid) == ()
+    assert engine.score_history(pid) == ()
+    assert engine.alerts.history == ()
+    assert engine.alerts.open_alerts == ()
+    assert {p.patient_id for p in engine.patients} == beds_before
+    assert engine.tick_count == ticks_before
+
+
+def test_a_control_change_is_persisted(config: Settings) -> None:
+    """Oxygen and trajectory changes must survive to disk, or the other process never sees
+    them and a restart reverts the bed to "room air"."""
+    repo = Repository(config=config)
+    engine = MonitoringEngine(config=config, load_vision=False, recorder=repo)
+    try:
+        pid = engine.patients[0].patient_id
+        assert engine.set_oxygen(pid, on=True, scale=2) is True
+        assert engine.set_state(pid, "deteriorating") is True
+
+        stored = repo.patient(pid)
+        assert stored is not None
+        assert stored.on_supplemental_oxygen is True
+        assert stored.spo2_scale == 2
+        assert stored.state is ClinicalState.DETERIORATING
+    finally:
+        engine.close()
+        repo.close()
 
 
 # ----------------------------------------------------------------- degraded and wiring

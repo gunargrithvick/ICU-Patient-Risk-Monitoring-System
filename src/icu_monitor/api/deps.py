@@ -61,17 +61,24 @@ class AppState:
     def engine(self) -> MonitoringEngine:
         with self._lock:
             if self._engine is None:
-                engine = MonitoringEngine(config=self._config, recorder=self.repository())
+                repository = self.repository()
+                engine = MonitoringEngine(config=self._config, recorder=repository)
+                # Resume the ward from the ledger before inventing a past. A restart should
+                # pick up the trend charts, open alerts, and de-dup state it had, and only
+                # fall back to synthetic warm-up when there is genuinely nothing to restore -
+                # backfilling on top of real history would bury it under invented ticks.
+                restored = engine.hydrate(repository) if repository is not None else False
                 warmup = self._config.api_warmup_ticks
-                if warmup > 0:
+                if warmup > 0 and not restored:
                     engine.run(warmup, backfill=True)
                 self._last_tick = time.monotonic()
                 self._engine = engine
                 logger.info(
-                    "Engine ready: %d beds, model %s, source %s",
+                    "Engine ready: %d beds, model %s, source %s (%s)",
                     len(engine.patients),
                     engine.model_version or "none",
                     engine.provider.source_label,
+                    "restored from storage" if restored else "fresh",
                 )
             return self._engine
 

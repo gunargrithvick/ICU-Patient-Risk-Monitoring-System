@@ -59,6 +59,10 @@ def _cancel_purge() -> None:
 
 def _do_purge(repository: Repository) -> None:
     repository.purge()
+    # The database is empty now; drop the history and alert ledger the engine still holds in
+    # memory, or the dashboard would keep drawing trend charts and open alerts for data the
+    # operator just deleted.
+    app_state.engine().reset()
     st.session_state["icu_confirm_purge"] = False
     st.session_state["icu_purged"] = True
 
@@ -98,7 +102,9 @@ def _system_panel() -> None:
             with trim_col:
                 if st.button("Trim to retention limit", width="stretch"):
                     removed = repository.trim()
-                    st.success(f"Removed {removed:,} row(s).")
+                    total = sum(removed.values())
+                    breakdown = ", ".join(f"{count:,} {name}" for name, count in removed.items())
+                    st.success(f"Removed {total:,} row(s): {breakdown}.")
             with purge_col:
                 st.button("Purge all rows", width="stretch", on_click=_ask_purge)
             if st.session_state.pop("icu_purged", False):
@@ -324,8 +330,7 @@ def render() -> None:
         ui.caption(f"API base URL: `{settings.api_base_url}` · docs at `/docs`")
 
     if st.button("Reset all settings to environment defaults"):
-        st.session_state.pop("icu_settings", None)
-        app_state.get_app_state.clear()
+        app_state.reset_to_defaults()
         st.rerun()
 
 

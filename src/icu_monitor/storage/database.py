@@ -22,7 +22,7 @@ server; ``ICU_DATABASE_URL`` swaps in Postgres without a code change.
 from __future__ import annotations
 
 import logging
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
@@ -38,6 +38,7 @@ from sqlalchemy import (
     String,
     create_engine,
     event,
+    update,
 )
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker
@@ -139,6 +140,20 @@ class AlertRow(Base):
     acknowledged_by: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
 
+class SchemaMeta(Base):
+    """One row per housekeeping key. Currently just ``version`` for the migration runner.
+
+    A tiny key/value table rather than SQLite's ``PRAGMA user_version`` so the same version
+    stamp works on Postgres too, and so migrations that need to remember more than an integer
+    have somewhere to write it.
+    """
+
+    __tablename__ = "schema_meta"
+
+    key: Mapped[str] = mapped_column(String(32), primary_key=True)
+    value: Mapped[str] = mapped_column(String(200), default="")
+
+
 # --------------------------------------------------------------------------------------
 # Engine
 # --------------------------------------------------------------------------------------
@@ -196,6 +211,79 @@ def create_all(engine: Engine) -> None:
     Base.metadata.create_all(engine)
 
 
+#: Bump this when a migration is added below. ``migrate`` walks from the database's stored
+#: version up to here, so a change without a matching migration step is a visible mistake.
+SCHEMA_VERSION = 1
+
+
+def _migrate_to_v1(session: SASession) -> None:
+    """Adopt each alert's row primary key as its ``alert_id``.
+
+    Older builds stored the ``AlertManager``'s per-process counter, which restarts at 1 in
+    every process, so an acknowledgement could address more than one event. The row PK is
+    unique across processes and restarts; copying it over makes historical rows consistent
+    with what the repository writes now. Idempotent and a no-op on a fresh database.
+    """
+    session.execute(
+        update(AlertRow)
+        .where((AlertRow.alert_id.is_(None)) | (AlertRow.alert_id != AlertRow.id))
+        .values(alert_id=AlertRow.id)
+    )
+
+
+#: Ordered migration steps, keyed by the version each one produces.
+_MIGRATIONS: dict[int, "Callable[[SASession], None]"] = {
+    1: _migrate_to_v1,
+}
+
+
+def _read_schema_version(session: SASession) -> int:
+    row = session.get(SchemaMeta, "version")
+    if row is None:
+        return 0
+    try:
+        return int(row.value)
+    except (TypeError, ValueError):  # pragma: no cover - defensive against a corrupt stamp
+        return 0
+
+
+def _stamp_schema_version(session: SASession, version: int) -> None:
+    row = session.get(SchemaMeta, "version")
+    if row is None:
+        session.add(SchemaMeta(key="version", value=str(version)))
+    else:
+        row.value = str(version)
+
+
+def migrate(engine: Engine) -> int:
+    """Create missing tables, then bring the schema up to :data:`SCHEMA_VERSION`.
+
+    ``create_all`` alone creates new *tables* but cannot alter an existing one or backfill
+    data, so a schema change would silently leave a half-old database in place. This walks
+    ordered, idempotent steps and records the result in ``schema_meta`` - a stamp that works
+    on SQLite and Postgres alike. A database written by a newer build is left untouched with
+    a loud warning rather than "migrated" backwards. Returns the version now in force.
+    """
+    create_all(engine)
+    factory = build_session_factory(engine)
+    with session_scope(factory) as session:
+        current = _read_schema_version(session)
+        if current > SCHEMA_VERSION:
+            logger.warning(
+                "Database schema is v%d but this build understands only v%d; "
+                "continuing without migrating.",
+                current,
+                SCHEMA_VERSION,
+            )
+            return current
+        for version in range(current + 1, SCHEMA_VERSION + 1):
+            _MIGRATIONS[version](session)
+            logger.info("Applied database migration to v%d.", version)
+        if current < SCHEMA_VERSION:
+            _stamp_schema_version(session, SCHEMA_VERSION)
+    return SCHEMA_VERSION
+
+
 def build_session_factory(engine: Engine) -> sessionmaker[SASession]:
     return sessionmaker(bind=engine, expire_on_commit=False, future=True)
 
@@ -215,13 +303,16 @@ def session_scope(factory: sessionmaker[SASession]) -> Iterator[SASession]:
 
 
 __all__ = [
+    "SCHEMA_VERSION",
     "AlertRow",
     "AssessmentRow",
     "Base",
     "PatientRow",
+    "SchemaMeta",
     "VitalsRow",
     "build_engine",
     "build_session_factory",
     "create_all",
+    "migrate",
     "session_scope",
 ]

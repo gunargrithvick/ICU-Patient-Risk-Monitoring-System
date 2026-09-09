@@ -32,18 +32,39 @@ logger = logging.getLogger(__name__)
 def get_app_state(fingerprint: str) -> AppState:
     """One :class:`AppState` per distinct configuration.
 
-    ``fingerprint`` is not read - it exists so that changing a setting on the Settings page
-    produces a different cache key and therefore a rebuilt ward, rather than silently
-    reusing an engine configured the old way.
+    ``fingerprint`` is the cache key: changing a setting on the Settings page produces a
+    different key and therefore a rebuilt ward, rather than silently reusing an engine
+    configured the old way. It is also the key under which the built instance is tracked in
+    :data:`_LIVE_STATES`, so a rebuild can close the engine it supersedes.
     """
-    # The argument is intentionally consumed only to make the cache key include every
-    # setting; Streamlit still hashes it because it does not start with an underscore.
-    del fingerprint
     configure_logging()
     settings = st.session_state.get("icu_settings") or get_settings()
     state = AppState(settings)
     state.engine()  # build eagerly: a spinner here beats a stall on first paint
+    # Streamlit hashes ``fingerprint`` because it does not start with an underscore, but it
+    # never closes what it evicts. Track the live instance so a settings change can dispose
+    # it - the vision camera handle and the SQLAlchemy engine both need closing.
+    _LIVE_STATES[fingerprint] = state
     return state
+
+
+#: Every AppState built this process, by fingerprint. Streamlit's cache holds its own
+#: references; this exists only so we can *close* them, which the cache will not do for us.
+_LIVE_STATES: dict[str, AppState] = {}
+
+
+def _dispose_cached_states() -> None:
+    """Close and forget every AppState built so far.
+
+    ``st.cache_resource.clear()`` drops Streamlit's references but never calls ``close``, so
+    the camera handle and the database engine would leak on every settings change or reset.
+    """
+    while _LIVE_STATES:
+        _, old = _LIVE_STATES.popitem()
+        try:
+            old.close()
+        except Exception:  # pragma: no cover - close is best-effort
+            logger.warning("Could not close a superseded AppState cleanly.", exc_info=True)
 
 
 def settings_fingerprint(settings: Settings) -> str:
@@ -79,8 +100,20 @@ def apply_settings(**changes: Any) -> bool:
         st.error("\n".join(f"{'.'.join(map(str, e['loc']))}: {e['msg']}" for e in exc.errors()))
         return False
     st.session_state["icu_settings"] = updated
+    _dispose_cached_states()
     get_app_state.clear()
     return True
+
+
+def reset_to_defaults() -> None:
+    """Forget session overrides and rebuild from environment defaults.
+
+    Closes the current engine first, for the same reason :func:`apply_settings` does: the
+    cache is about to forget it, and only this layer will ever call ``close`` on it.
+    """
+    st.session_state.pop("icu_settings", None)
+    _dispose_cached_states()
+    get_app_state.clear()
 
 
 def state() -> AppState:
@@ -90,6 +123,31 @@ def state() -> AppState:
 
 def engine() -> MonitoringEngine:
     return state().engine()
+
+
+def acknowledge_alert(alert_id: int, *, by: str = "dashboard") -> None:
+    """Acknowledge one alert in the live ledger *and*, when present, on disk.
+
+    Both surfaces must agree. The in-memory manager drives the wall display this instant; the
+    repository is what survives a restart and what the HTTP API reads. Writing only the former
+    is the bug where an ack vanished the moment the dashboard rebuilt. The alert id is the
+    database row's primary key, so it addresses the same event in both.
+    """
+    current = state()
+    current.engine().alerts.acknowledge(alert_id, by=by)
+    repository = current.repository()
+    if repository is not None:
+        repository.acknowledge(alert_id, by=by)
+
+
+def acknowledge_all_alerts(*, patient_id: str | None = None, by: str = "dashboard") -> int:
+    """Acknowledge every open alert (optionally for one bed) in the ledger and on disk."""
+    current = state()
+    cleared = current.engine().alerts.acknowledge_all(patient_id=patient_id, by=by)
+    repository = current.repository()
+    if repository is not None:
+        repository.acknowledge_all(patient_id=patient_id, by=by)
+    return cleared
 
 
 def snapshot(*, force: bool = False) -> WardSnapshot:
@@ -119,10 +177,13 @@ def select_patient(patient_id: str) -> None:
 
 
 __all__ = [
+    "acknowledge_alert",
+    "acknowledge_all_alerts",
     "apply_settings",
     "current_settings",
     "engine",
     "get_app_state",
+    "reset_to_defaults",
     "select_patient",
     "selected_patient",
     "settings_fingerprint",

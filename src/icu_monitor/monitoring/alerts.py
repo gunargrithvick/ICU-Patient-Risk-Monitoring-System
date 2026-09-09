@@ -27,7 +27,7 @@ from __future__ import annotations
 
 import logging
 from collections import deque
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field
 from datetime import datetime
 
@@ -461,6 +461,39 @@ class AlertManager:
         for key in [k for k in self._cleared_at if k.startswith(f"{patient_id}:")]:
             self._cleared_at.pop(key, None)
         self._previous_level.pop(patient_id, None)
+
+    # -- restore -----------------------------------------------------------------------
+
+    def hydrate(self, alerts: Iterable[Alert]) -> int:
+        """Rebuild the ledger from persisted alerts after a restart.
+
+        ``alerts`` may arrive in any order; they are sorted oldest-first into the bounded
+        history deque. The still-open ones seed the per-condition dedup map, so a condition
+        that is *still* true after the restart refreshes its existing alert instead of raising
+        a duplicate - the next :meth:`evaluate` pops any that has since resolved, so a wrong
+        guess self-corrects within one tick. ``_next_id`` is advanced past every restored id
+        so an in-memory-minted id (used before the database assigns one, or when there is no
+        database at all) can never collide with a restored one. Returns the count restored.
+        """
+        restored = sorted(alerts, key=lambda a: (a.created_at, a.alert_id or 0))
+        self._history.clear()
+        self._history.extend(restored)
+        self._active.clear()
+        for alert in restored:
+            if alert.is_open:
+                # Ascending order means the newest open alert per condition wins.
+                self._active[alert.dedupe_key] = alert
+        highest = max((alert.alert_id or 0 for alert in restored), default=0)
+        self._next_id = max(self._next_id, highest + 1)
+        return len(restored)
+
+    def seed_levels(self, levels: Mapping[str, RiskLevel]) -> None:
+        """Prime each bed's last-known risk level so escalation is measured from it.
+
+        Without this the first tick after a restart sees every patient's previous level as
+        ``UNKNOWN`` and re-announces an already-high bed as a fresh escalation.
+        """
+        self._previous_level.update(levels)
 
     def clear(self) -> None:
         self._active.clear()

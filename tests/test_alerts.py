@@ -21,7 +21,7 @@ import pytest
 from icu_monitor.config import Settings
 from icu_monitor.core.fusion import fuse_risk
 from icu_monitor.core.news2 import calculate_news2
-from icu_monitor.core.types import AlertKind, Patient, RiskLevel, Vitals
+from icu_monitor.core.types import Alert, AlertKind, Patient, RiskLevel, Vitals
 from icu_monitor.monitoring.alerts import (
     RULES,
     SENSOR_SILENCE_SECONDS,
@@ -448,3 +448,84 @@ def test_the_open_list_is_bounded(config: Settings, tmp_path) -> None:
         patient = make_patient(f"P{index:03d}")
         tick(manager, tight, patient=patient, spo2=85.0, at=EPOCH + timedelta(seconds=index))
     assert len(manager.history) <= tight.alert_max_open
+
+
+# --------------------------------------------------------------- restore after a restart
+
+
+def _stored_alert(
+    kind: AlertKind,
+    *,
+    patient_id: str = "P001",
+    severity: RiskLevel = RiskLevel.HIGH,
+    alert_id: int = 1,
+    created_at=EPOCH,
+    acknowledged: bool = False,
+) -> Alert:
+    """An alert as it comes back off the ledger after a restart."""
+    alert = Alert(
+        patient_id=patient_id,
+        kind=kind,
+        severity=severity,
+        message=kind.label,
+        created_at=created_at,
+        last_seen_at=created_at,
+        alert_id=alert_id,
+    )
+    if acknowledged:
+        alert.acknowledge("nurse")
+    return alert
+
+
+def test_hydrate_rebuilds_the_open_ledger(manager: AlertManager) -> None:
+    """A restart restores the full audit trail, but only the unacknowledged alerts go live.
+
+    The acknowledged pyrexia belongs in history for the record; it must not reappear on the
+    wall display. The still-open hypoxia seeds the per-condition dedup map so that a condition
+    which is *still* true refreshes its restored alert instead of raising a duplicate.
+    """
+    stored = [
+        _stored_alert(AlertKind.PYREXIA, alert_id=1, created_at=EPOCH, acknowledged=True),
+        _stored_alert(AlertKind.HYPOXIA, alert_id=2, created_at=EPOCH + timedelta(seconds=5)),
+    ]
+
+    restored = manager.hydrate(stored)
+
+    assert restored == 2
+    assert {a.kind for a in manager.history} == {AlertKind.PYREXIA, AlertKind.HYPOXIA}
+    assert [a.kind for a in manager.open_alerts] == [AlertKind.HYPOXIA]
+    assert [a.kind for a in manager.active] == [AlertKind.HYPOXIA]
+
+
+def test_hydrate_advances_the_id_counter_past_restored_ids(
+    manager: AlertManager, config: Settings
+) -> None:
+    """A restored id of 50 must never be handed out again to a freshly raised alert."""
+    manager.hydrate([_stored_alert(AlertKind.HYPOXIA, patient_id="P001", alert_id=50)])
+
+    raised = tick(manager, config, patient=make_patient("P002"), spo2=85.0)
+    hypoxia = next(a for a in raised if a.kind is AlertKind.HYPOXIA)
+    assert hypoxia.alert_id is not None
+    assert hypoxia.alert_id > 50
+
+
+def test_seed_levels_prevents_a_spurious_re_escalation(config: Settings) -> None:
+    """Priming the last-known level stops a still-high bed re-announcing on the first tick."""
+    patient = make_patient("P001")
+    observation = make_vitals(at=EPOCH, resp_rate=26.0, spo2=90.0, heart_rate=135.0)
+    level = assess_for(config, patient, observation).level
+    assert level.rank >= RiskLevel.HIGH.rank  # the observation really is high-risk
+
+    seeded = AlertManager(config=config)
+    seeded.seed_levels({patient.patient_id: level})
+    raised = seeded.evaluate(
+        patient, observation, assess_for(config, patient, observation), now=EPOCH
+    )
+    assert AlertKind.RISK_ESCALATION not in {a.kind for a in raised}
+
+    # Without the seed the identical first look reads as a fresh escalation.
+    cold = AlertManager(config=config)
+    raised_cold = cold.evaluate(
+        patient, observation, assess_for(config, patient, observation), now=EPOCH
+    )
+    assert AlertKind.RISK_ESCALATION in {a.kind for a in raised_cold}

@@ -45,7 +45,7 @@ from icu_monitor.storage.database import (
     VitalsRow,
     build_engine,
     build_session_factory,
-    create_all,
+    migrate,
     session_scope,
 )
 
@@ -68,7 +68,7 @@ class Repository:
         self._config = config or default_settings
         self.engine = engine or build_engine(self._config)
         if create:
-            create_all(self.engine)
+            migrate(self.engine)
         self._sessions = build_session_factory(self.engine)
         self._writes = 0
         self.write_errors = 0
@@ -183,19 +183,27 @@ class Repository:
                 )
             )
             for alert in alerts:
-                session.add(
-                    AlertRow(
-                        alert_id=alert.alert_id,
-                        patient_id=alert.patient_id,
-                        kind=alert.kind.value,
-                        severity=alert.severity.value,
-                        message=alert.message,
-                        detail=alert.detail,
-                        created_at=alert.created_at,
-                        acknowledged_at=alert.acknowledged_at,
-                        acknowledged_by=alert.acknowledged_by,
-                    )
+                row = AlertRow(
+                    patient_id=alert.patient_id,
+                    kind=alert.kind.value,
+                    severity=alert.severity.value,
+                    message=alert.message,
+                    detail=alert.detail,
+                    created_at=alert.created_at,
+                    acknowledged_at=alert.acknowledged_at,
+                    acknowledged_by=alert.acknowledged_by,
                 )
+                session.add(row)
+                # Adopt the database's autoincrement primary key as *the* alert id. It is
+                # the only identifier that is unique across processes and across restarts,
+                # which the manager's per-process counter is not: dashboard and API each
+                # start theirs at 1, so without this an acknowledgement of "alert 1" from
+                # one process would silence a different "alert 1" persisted by the other.
+                # The in-memory Alert is the same object the AlertManager holds, so writing
+                # the id back keeps the live ledger and the row addressing the same event.
+                session.flush()
+                row.alert_id = row.id
+                alert.alert_id = row.id
 
         self._writes += 1
         if self._writes % TRIM_EVERY == 0:
@@ -333,13 +341,19 @@ class Repository:
     # -- retention ---------------------------------------------------------------------
 
     def trim(self, *, keep: int | None = None) -> dict[str, int]:
-        """Delete the oldest rows beyond the retention cap. Returns rows removed."""
+        """Delete the oldest rows beyond the retention cap. Returns rows removed.
+
+        Alerts are capped too, but an *open* (unacknowledged) alert is never deleted: the
+        ledger is an audit trail, and a demo running all weekend must not lose a critical
+        event that nobody has attended to just because the vitals behind it aged out.
+        """
         limit = keep if keep is not None else self._config.db_retention_rows
-        removed = {"vitals": 0, "assessments": 0}
+        removed = {"vitals": 0, "assessments": 0, "alerts": 0}
         try:
             with session_scope(self._sessions) as session:
                 removed["vitals"] = _trim_table(session, VitalsRow, limit)
                 removed["assessments"] = _trim_table(session, AssessmentRow, limit)
+                removed["alerts"] = _trim_alerts(session, limit)
         except Exception as exc:  # pragma: no cover - backend specific
             logger.warning("Retention sweep failed (%s).", exc)
         return removed
@@ -368,6 +382,29 @@ def _trim_table(session, model, limit: int) -> int:
     if not doomed:
         return 0
     session.execute(delete(model).where(model.id.in_(doomed)))
+    return len(doomed)
+
+
+def _trim_alerts(session, limit: int) -> int:
+    """Cap the alert ledger, deleting oldest *acknowledged* alerts first.
+
+    Open alerts are exempt on purpose - see :meth:`Repository.trim`. Only rows that have
+    been acknowledged are eligible, so the count of eligible rows, not the total, is what
+    the cap is measured against; an all-open ledger is left entirely intact.
+    """
+    total = int(session.scalar(select(func.count()).select_from(AlertRow)) or 0)
+    excess = total - max(100, limit)
+    if excess <= 0:
+        return 0
+    doomed = session.scalars(
+        select(AlertRow.id)
+        .where(AlertRow.acknowledged_at.is_not(None))
+        .order_by(AlertRow.id.asc())
+        .limit(excess)
+    ).all()
+    if not doomed:
+        return 0
+    session.execute(delete(AlertRow).where(AlertRow.id.in_(doomed)))
     return len(doomed)
 
 
@@ -432,12 +469,23 @@ def _to_alert(row: AlertRow) -> Alert:
 
 
 def build_repository(config: Settings | None = None) -> Repository | None:
-    """Build a repository, or ``None`` if the database cannot be opened.
+    """Build a repository, or ``None`` if there is to be no persistence.
 
-    Returning ``None`` rather than raising is the whole point: persistence is a
-    convenience here, and a broken database must degrade to in-memory operation instead
-    of preventing the ward from being monitored at all.
+    Returns ``None`` in two distinct cases, and the distinction is deliberate:
+
+    * The operator set ``ICU_DATABASE_URL`` to an empty string, explicitly asking to run in
+      memory. This is a *choice*, logged at info level, not a failure.
+    * The database could not be opened. Persistence is a convenience here, so a broken
+      database degrades to in-memory operation - logged as a warning - instead of preventing
+      the ward from being monitored at all.
+
+    With the variable unset, ``Settings`` fills in a file-based SQLite path, so the default is
+    that persistence *is* on and survives a restart. See the field comment in ``config``.
     """
+    cfg = config or default_settings
+    if cfg.database_url is not None and not cfg.database_url.strip():
+        logger.info("ICU_DATABASE_URL is empty; running without persistence by request.")
+        return None
     try:
         return Repository(config=config)
     except Exception as exc:

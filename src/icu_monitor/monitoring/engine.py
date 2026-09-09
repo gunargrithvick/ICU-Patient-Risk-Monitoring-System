@@ -64,6 +64,27 @@ class Recorder(Protocol):
         alerts: Sequence[Alert],
     ) -> None: ...
 
+    def upsert_patient(self, patient: Patient) -> None: ...
+
+
+class HistoryStore(Protocol):
+    """The read side of storage the engine uses to restore itself on startup.
+
+    Kept separate from :class:`Recorder` because restoring is a distinct capability from
+    recording, and again declared here so the engine never imports SQLAlchemy. The
+    repository satisfies both protocols.
+    """
+
+    def recent_vitals(self, patient_id: str, *, limit: int = ...) -> list[Vitals]: ...
+
+    def score_series(
+        self, patient_id: str, *, limit: int = ...
+    ) -> list[tuple[datetime, float, str]]: ...
+
+    def alerts(
+        self, *, patient_id: str | None = ..., open_only: bool = ..., limit: int = ...
+    ) -> list[Alert]: ...
+
 
 @dataclass(slots=True)
 class WardSnapshot:
@@ -197,6 +218,69 @@ class MonitoringEngine:
     def patient(self, patient_id: str) -> Patient | None:
         return self.provider.patients.get(patient_id)
 
+    # -- restore & reset ---------------------------------------------------------------
+
+    def hydrate(self, store: HistoryStore) -> bool:
+        """Repopulate per-patient history, score trends, and the alert ledger from storage.
+
+        Called once at startup. A restart then resumes the ward it was monitoring - the trend
+        charts, the open-alert wall, and the de-duplication state - instead of beginning from
+        a blank history and re-raising every still-true condition as though it were new. Only
+        beds the provider currently serves are restored; a bed the DB knows but this ward does
+        not is ignored. Returns ``True`` if anything was restored.
+        """
+        window = self._config.history_window
+        restored_any = False
+        levels: dict[str, RiskLevel] = {}
+
+        for patient_id in self.provider.patients:
+            try:
+                vitals = store.recent_vitals(patient_id, limit=window)
+                scores = store.score_series(patient_id, limit=window)
+            except Exception as exc:  # pragma: no cover - backend specific
+                logger.warning("Could not restore history for %s (%s).", patient_id, exc)
+                continue
+            if vitals:
+                history = self._history.setdefault(patient_id, deque(maxlen=window))
+                history.clear()
+                history.extend(vitals[-window:])
+                restored_any = True
+            if scores:
+                trend = self._scores.setdefault(patient_id, deque(maxlen=window))
+                trend.clear()
+                trend.extend((at, score) for at, score, _level in scores[-window:])
+                levels[patient_id] = RiskLevel.coerce(scores[-1][2])
+                restored_any = True
+
+        try:
+            ledger = store.alerts(limit=self._config.alert_max_open)
+        except Exception as exc:  # pragma: no cover - backend specific
+            logger.warning("Could not restore the alert ledger (%s).", exc)
+            ledger = []
+        if ledger:
+            self.alerts.hydrate(ledger)
+            restored_any = True
+        if levels:
+            self.alerts.seed_levels(levels)
+
+        if restored_any:
+            logger.info("Restored ward state from storage for %d bed(s).", len(self._history))
+        return restored_any
+
+    def reset(self) -> None:
+        """Drop all in-memory history and the alert ledger, keeping the beds.
+
+        The Settings page's purge empties the database; without this the engine would keep
+        serving the trend charts and open alerts it had already loaded, so the dashboard would
+        show data the operator had just deleted. Beds and the tick counter are left alone -
+        the ward is still the same ward, it just has no past.
+        """
+        for buffer in self._history.values():
+            buffer.clear()
+        for trend in self._scores.values():
+            trend.clear()
+        self.alerts.clear()
+
     # -- one tick ----------------------------------------------------------------------
 
     def tick(self, *, at: datetime | None = None) -> WardSnapshot:
@@ -321,6 +405,24 @@ class MonitoringEngine:
         """Ask the provider to start a clinical event on one bed."""
         return self.provider.inject(patient_id, event)
 
+    def _persist_patient(self, patient_id: str) -> None:
+        """Best-effort write-back of a bed's record after a control change.
+
+        Mirrors :meth:`record_tick`'s contract: the control has already taken effect in
+        memory, so a failed database write is logged and swallowed rather than reported as a
+        refused change. Without this, oxygen and trajectory changes made on one process were
+        invisible to the other and lost on restart - the record on disk still said "room air".
+        """
+        if self.recorder is None:
+            return
+        patient = self.patient(patient_id)
+        if patient is None:  # pragma: no cover - defensive
+            return
+        try:
+            self.recorder.upsert_patient(patient)
+        except Exception as exc:  # pragma: no cover - persistence is best-effort
+            logger.warning("Could not persist control change for %s (%s).", patient_id, exc)
+
     def set_state(self, patient_id: str, state: str) -> bool:
         """Set a bed's trajectory, refusing anything the provider cannot honour.
 
@@ -339,7 +441,10 @@ class MonitoringEngine:
         except ValueError:
             logger.warning("Refused unknown clinical state %r for %s.", state, patient_id)
             return False
-        return bool(self.provider.set_state(patient_id, resolved))
+        changed = bool(self.provider.set_state(patient_id, resolved))
+        if changed:
+            self._persist_patient(patient_id)
+        return changed
 
     def set_oxygen(self, patient_id: str, *, on: bool, scale: int | None = None) -> bool:
         """Set supplemental oxygen, and optionally the SpO₂ target scale.
@@ -352,6 +457,8 @@ class MonitoringEngine:
         if patient is not None and scale in {1, 2}:
             patient.spo2_scale = int(scale)
             changed = True
+        if changed:
+            self._persist_patient(patient_id)
         return changed
 
     def active_events(self, patient_id: str) -> tuple[str, ...]:
@@ -409,6 +516,7 @@ def build_engine(
 
 
 __all__ = [
+    "HistoryStore",
     "MonitoringEngine",
     "Recorder",
     "WardSnapshot",

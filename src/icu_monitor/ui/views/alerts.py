@@ -23,10 +23,6 @@ from icu_monitor.ui import components as ui
 from icu_monitor.ui import state as app_state
 
 
-def _acknowledge(alert_id: int) -> None:
-    app_state.engine().alerts.acknowledge(alert_id, by="dashboard")
-
-
 def render(snapshot: WardSnapshot) -> None:
     engine = app_state.engine()
     manager = engine.alerts
@@ -87,7 +83,7 @@ def render(snapshot: WardSnapshot) -> None:
             st.markdown("<div style='height:1.6rem'></div>", unsafe_allow_html=True)
             if st.button("Acknowledge all", width="stretch", type="primary"):
                 target = None if patient == "All beds" else patient
-                cleared = manager.acknowledge_all(patient_id=target, by="dashboard")
+                cleared = app_state.acknowledge_all_alerts(patient_id=target)
                 st.success(f"Acknowledged {cleared} alert(s).")
 
     if scope == "Active":
@@ -114,7 +110,7 @@ def render(snapshot: WardSnapshot) -> None:
         return
 
     for alert in alerts[:60]:
-        ui.alert_card(alert, on_acknowledge=_acknowledge, key_prefix=f"alerts_{scope}")
+        ui.alert_card(alert, on_acknowledge=app_state.acknowledge_alert, key_prefix=f"alerts_{scope}")
     if len(alerts) > 60:
         ui.caption(f"Showing the first 60 of {len(alerts)}.")
 

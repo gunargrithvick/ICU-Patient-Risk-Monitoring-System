@@ -311,7 +311,7 @@ def render(snapshot: WardSnapshot) -> None:
         for alert in patient_alerts[:12]:
             ui.alert_card(
                 alert,
-                on_acknowledge=lambda aid: engine.alerts.acknowledge(aid, by="dashboard"),
+                on_acknowledge=app_state.acknowledge_alert,
                 key_prefix="patient_alert",
                 show_patient=False,
             )

@@ -14,6 +14,7 @@ the table must not launder it into a plausible zero.
 
 from __future__ import annotations
 
+import logging
 from datetime import timedelta
 
 import pytest
@@ -34,13 +35,16 @@ from icu_monitor.core.types import (
     utcnow,
 )
 from icu_monitor.storage.database import (
+    SCHEMA_VERSION,
     AlertRow,
     AssessmentRow,
     PatientRow,
+    SchemaMeta,
     VitalsRow,
     build_engine,
     build_session_factory,
     create_all,
+    migrate,
     session_scope,
 )
 from icu_monitor.storage.repository import TRIM_EVERY, Repository, build_repository
@@ -194,6 +198,80 @@ def test_two_repositories_can_share_one_engine(config: Settings) -> None:
         engine.dispose()
 
 
+# ------------------------------------------------------------------------------- migration
+
+
+def test_migration_backfills_legacy_alert_ids(config: Settings) -> None:
+    """A row written before the row-PK-as-id fix has ``alert_id`` NULL; v1 adopts the PK.
+
+    The per-process counter that older builds stored restarts at 1 in every process, so an
+    acknowledgement could address more than one event. Copying the unique row PK over makes
+    the historical rows consistent with what the repository writes now.
+    """
+    engine = build_engine(config)
+    try:
+        create_all(engine)
+        sessions = build_session_factory(engine)
+        with session_scope(sessions) as session:
+            session.add(PatientRow(patient_id="P001", bed="ICU-01"))
+            session.flush()
+            session.add_all(
+                [
+                    AlertRow(
+                        patient_id="P001",
+                        kind="hypoxia",
+                        severity="HIGH",
+                        created_at=EPOCH,
+                        alert_id=None,
+                    ),
+                    AlertRow(
+                        patient_id="P001",
+                        kind="tachycardia",
+                        severity="HIGH",
+                        created_at=EPOCH,
+                        alert_id=None,
+                    ),
+                ]
+            )
+
+        assert migrate(engine) == SCHEMA_VERSION
+        with session_scope(sessions) as session:
+            rows = session.scalars(select(AlertRow).order_by(AlertRow.id)).all()
+        assert len(rows) == 2
+        assert all(row.alert_id == row.id for row in rows)
+    finally:
+        engine.dispose()
+
+
+def test_migration_stamps_the_version_and_is_idempotent(config: Settings) -> None:
+    """Every start migrates, so a second run has to be a no-op that still reports the version."""
+    engine = build_engine(config)
+    try:
+        assert migrate(engine) == SCHEMA_VERSION
+        sessions = build_session_factory(engine)
+        with session_scope(sessions) as session:
+            assert session.get(SchemaMeta, "version").value == str(SCHEMA_VERSION)
+        assert migrate(engine) == SCHEMA_VERSION
+    finally:
+        engine.dispose()
+
+
+def test_a_future_schema_is_left_untouched(config: Settings, caplog) -> None:
+    """A database written by a newer build must be refused, loudly, not migrated backwards."""
+    engine = build_engine(config)
+    try:
+        migrate(engine)
+        sessions = build_session_factory(engine)
+        with session_scope(sessions) as session:
+            session.get(SchemaMeta, "version").value = "999"
+
+        with caplog.at_level(logging.WARNING):
+            assert migrate(engine) == 999
+        assert "understands only" in caplog.text
+    finally:
+        engine.dispose()
+
+
 # ------------------------------------------------------------------------------- patients
 
 
@@ -326,8 +404,8 @@ def test_timestamps_come_back_timezone_aware(repo: Repository, config: Settings)
     caller first compared it with the present - a failure that surfaces nowhere near the
     row that caused it.
     """
-    record(repo, config, alerts=(alarm(alert_id=1),))
-    repo.acknowledge(1)
+    record(repo, config, alerts=(alarm(),))
+    repo.acknowledge(repo.alerts()[0].alert_id)
 
     stored_vitals = repo.recent_vitals("P001")[-1]
     stored_alert = repo.alerts()[0]
@@ -357,8 +435,9 @@ def test_a_write_failure_is_counted_not_raised(repo: Repository, config: Setting
 
 
 def test_acknowledging_stamps_who_and_when(repo: Repository, config: Settings) -> None:
-    record(repo, config, alerts=(alarm(alert_id=17),))
-    assert repo.acknowledge(17, by="charge nurse") == 1
+    record(repo, config, alerts=(alarm(),))
+    stored_id = repo.alerts()[0].alert_id
+    assert repo.acknowledge(stored_id, by="charge nurse") == 1
 
     stored = repo.alerts()[0]
     assert stored.acknowledged_at is not None
@@ -367,10 +446,11 @@ def test_acknowledging_stamps_who_and_when(repo: Repository, config: Settings) -
 
 def test_acknowledging_twice_changes_nothing(repo: Repository, config: Settings) -> None:
     """The button is clickable twice and the ledger must record the first press only."""
-    record(repo, config, alerts=(alarm(alert_id=17),))
-    assert repo.acknowledge(17) == 1
+    record(repo, config, alerts=(alarm(),))
+    stored_id = repo.alerts()[0].alert_id
+    assert repo.acknowledge(stored_id) == 1
     first = repo.alerts()[0].acknowledged_at
-    assert repo.acknowledge(17) == 0
+    assert repo.acknowledge(stored_id) == 0
     assert repo.alerts()[0].acknowledged_at == first
 
 
@@ -474,11 +554,13 @@ def test_open_only_hides_what_was_dealt_with(repo: Repository, config: Settings)
 
 
 def test_the_alert_survives_the_round_trip_whole(repo: Repository, config: Settings) -> None:
-    record(repo, config, alerts=(alarm(AlertKind.BED_EXIT, severity=RiskLevel.MEDIUM, alert_id=9),))
+    record(repo, config, alerts=(alarm(AlertKind.BED_EXIT, severity=RiskLevel.MEDIUM),))
     stored = repo.alerts()[0]
     assert stored.kind is AlertKind.BED_EXIT
     assert stored.severity is RiskLevel.MEDIUM
-    assert stored.alert_id == 9
+    # The id is assigned by the database, not the caller: it is the row's primary key, which
+    # is what makes it unique across the dashboard and API processes (issue: colliding ids).
+    assert stored.alert_id is not None
     assert "hypoxia" in stored.detail.lower()
 
 
@@ -537,7 +619,7 @@ def test_health_fails_when_the_database_is_gone(repo: Repository) -> None:
 
 def test_nothing_is_trimmed_below_the_cap(repo: Repository, config: Settings) -> None:
     fill(repo, config, 20)
-    assert repo.trim() == {"vitals": 0, "assessments": 0}
+    assert repo.trim() == {"vitals": 0, "assessments": 0, "alerts": 0}
     assert repo.stats()["vitals"] == 20
 
 
@@ -545,7 +627,7 @@ def test_trimming_removes_the_oldest_rows_first(repo: Repository, config: Settin
     """A capped table has to keep the recent past, which is the part anyone will look at."""
     fill(repo, config, 120)
     removed = repo.trim(keep=5)
-    assert removed == {"vitals": 20, "assessments": 20}
+    assert removed == {"vitals": 20, "assessments": 20, "alerts": 0}
 
     survivors = repo.recent_vitals("P001", limit=200)
     assert len(survivors) == 100
@@ -563,6 +645,44 @@ def test_the_retention_floor_beats_a_silly_configuration(
     fill(repo, config, 130)
     repo.trim(keep=1)
     assert repo.stats()["vitals"] == 100
+
+
+def test_an_open_alert_is_never_trimmed(repo: Repository, config: Settings) -> None:
+    """The ledger is an audit trail: retention deletes acknowledged alerts, never an open one.
+
+    A demo running all weekend must not lose a critical event that nobody has attended to
+    just because the vitals behind it aged past the cap.
+    """
+    for index in range(130):
+        record(repo, config, at=EPOCH + timedelta(seconds=index), alerts=(alarm(),))
+    repo.acknowledge_all()  # the first 130 are now acknowledged
+    record(
+        repo,
+        config,
+        at=EPOCH + timedelta(seconds=200),
+        alerts=(alarm(AlertKind.TACHYCARDIA),),
+    )
+
+    removed = repo.trim(keep=1)
+    # 131 rows, floor 100: 31 must go, and every doomed row is one that was acknowledged.
+    assert removed["alerts"] == 31
+
+    open_alerts = repo.alerts(open_only=True)
+    assert [a.kind for a in open_alerts] == [AlertKind.TACHYCARDIA]
+    stats = repo.stats()
+    assert stats["alerts"] == 100
+    assert stats["open_alerts"] == 1
+
+
+def test_an_all_open_ledger_is_left_intact(repo: Repository, config: Settings) -> None:
+    """With nothing acknowledged there is nothing eligible to delete, cap or no cap."""
+    for index in range(130):
+        record(repo, config, at=EPOCH + timedelta(seconds=index), alerts=(alarm(),))
+
+    removed = repo.trim(keep=1)
+    assert removed["alerts"] == 0
+    assert repo.stats()["alerts"] == 130
+    assert repo.stats()["open_alerts"] == 130
 
 
 def test_retention_runs_itself_as_the_ward_ticks(config: Settings) -> None:
@@ -585,7 +705,7 @@ def test_a_failed_sweep_does_not_propagate(repo: Repository, config: Settings) -
     """Retention is housekeeping. It must not be the thing that kills a running ward."""
     fill(repo, config, 5)
     repo.engine.dispose()
-    assert repo.trim(keep=1) == {"vitals": 0, "assessments": 0}
+    assert repo.trim(keep=1) == {"vitals": 0, "assessments": 0, "alerts": 0}
 
 
 def test_purging_empties_everything(repo: Repository, config: Settings) -> None:
@@ -681,3 +801,71 @@ def test_closing_releases_the_engine(config: Settings) -> None:
     instance = Repository(config=config)
     instance.close()
     assert instance.healthy() is False
+
+
+# ---------------------------------------------------------------- ids across processes
+
+
+def test_alert_ids_do_not_collide_across_processes(config: Settings, tmp_path) -> None:
+    """Dashboard and API run as separate processes against one file.
+
+    Each ``AlertManager`` mints its own ids starting at 1, so without a shared authority an
+    acknowledgement of "alert 1" from one process would silence a different "alert 1"
+    persisted by the other. The database's autoincrement PK is that authority: it never
+    repeats, and ``record_tick`` writes it back onto the in-memory alert.
+    """
+    url = f"sqlite:///{(tmp_path / 'ward.db').as_posix()}"
+    shared = config.with_overrides(database_url=url)
+
+    first = Repository(config=shared)
+    second = Repository(config=shared)
+    try:
+        dashboard_alert = alarm(patient_id="P001", alert_id=1)
+        api_alert = alarm(AlertKind.TACHYCARDIA, patient_id="P001", alert_id=1)
+        record(first, shared, patient=make_patient("P001"), at=EPOCH, alerts=(dashboard_alert,))
+        record(
+            second,
+            shared,
+            patient=make_patient("P001"),
+            at=EPOCH + timedelta(seconds=1),
+            alerts=(api_alert,),
+        )
+
+        # Both callers were handed the manager's id 1; the ledger gave them distinct PKs.
+        assert dashboard_alert.alert_id == 1
+        assert api_alert.alert_id == 2
+        # Either process reads the same two, distinct ids off the shared file.
+        assert sorted(a.alert_id for a in first.alerts()) == [1, 2]
+        assert sorted(a.alert_id for a in second.alerts()) == [1, 2]
+    finally:
+        first.close()
+        second.close()
+
+
+# ------------------------------------------------------------------ persistence opt-out
+
+
+def test_an_empty_database_url_opts_out_of_persistence(tmp_path) -> None:
+    """An empty ``ICU_DATABASE_URL`` is a deliberate "run in memory" choice, not a failure."""
+    settings = Settings(project_root=tmp_path, database_url="")
+    assert build_repository(settings) is None
+
+
+def test_a_whitespace_only_url_opts_out_too(tmp_path) -> None:
+    """A value that is all spaces is empty in intent, so it takes the same opt-out path."""
+    settings = Settings(project_root=tmp_path, database_url="   ")
+    assert build_repository(settings) is None
+
+
+def test_the_default_url_builds_a_file_backed_repository(tmp_path) -> None:
+    """Unset means a SQLite file under ``data/`` - persistence is on and survives a restart."""
+    settings = Settings(project_root=tmp_path, database_url=None)
+    expected = f"sqlite:///{(tmp_path / 'data' / 'icu_monitor.db').as_posix()}"
+    assert settings.database_url == expected
+
+    instance = build_repository(settings)
+    assert isinstance(instance, Repository)
+    try:
+        assert (tmp_path / "data" / "icu_monitor.db").exists()
+    finally:
+        instance.close()
