@@ -1,0 +1,13 @@
+# Normalise line endings so the repo is byte-identical on Windows, macOS, and the
+# Linux CI runner. Text files are stored with LF; Git converts on checkout only where
+# the platform needs it. Binary artefacts are marked so Git never touches them.
+* text=auto eol=lf
+
+*.png binary
+*.jpg binary
+*.joblib binary
+*.parquet binary
+*.zip binary
+*.pt binary
+*.onnx binary
+*.db binary

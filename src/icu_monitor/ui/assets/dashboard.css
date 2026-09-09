@@ -1,0 +1,237 @@
+/* Dashboard stylesheet.
+ *
+ * This file styles Streamlit's *own* DOM. It deliberately contains no layout HTML,
+ * because the previous version of this dashboard built cards by emitting raw
+ * `<div class="card">` through st.markdown and then calling st.metric inside them.
+ * That cannot work: Streamlit renders each element into its own container, so the
+ * opening div is closed before the widget arrives, and the sanitiser drops what is
+ * left. The result looked like a card and behaved like nothing.
+ *
+ * The rule this file follows instead: containers come from st.container(border=True),
+ * and CSS reaches them through the data-testid attributes Streamlit already emits.
+ * Nothing here depends on markup we inject.
+ */
+
+:root {
+  --icu-page: #0b0f14;
+  --icu-surface: #141a21;
+  --icu-raised: #1b2430;
+  --icu-border: #232c36;
+  --icu-border-strong: #31404f;
+  --icu-ink: #f5f7fa;
+  --icu-ink-2: #c2cad6;
+  --icu-ink-3: #8b95a3;
+  --icu-good: #2fa36b;
+  --icu-warning: #f0c22a;
+  --icu-serious: #ef7c2b;
+  --icu-critical: #c22b34;
+  --icu-radius: 10px;
+}
+
+/* -- page shell ---------------------------------------------------------------------- */
+
+.stApp {
+  background: var(--icu-page);
+}
+
+.block-container {
+  padding-top: 1.4rem;
+  padding-bottom: 3rem;
+  max-width: 1500px;
+}
+
+[data-testid="stHeader"] {
+  background: transparent;
+}
+
+[data-testid="stSidebar"] {
+  background: var(--icu-surface);
+  border-right: 1px solid var(--icu-border);
+}
+
+[data-testid="stSidebar"] .block-container {
+  padding-top: 1.2rem;
+}
+
+/* -- bordered containers are the card primitive ------------------------------------- */
+
+[data-testid="stVerticalBlockBorderWrapper"] {
+  background: var(--icu-surface);
+  border: 1px solid var(--icu-border) !important;
+  border-radius: var(--icu-radius);
+  padding: 0.15rem 0.05rem;
+}
+
+/* A nested bordered container sits on the raised surface so depth still reads. */
+[data-testid="stVerticalBlockBorderWrapper"]
+  [data-testid="stVerticalBlockBorderWrapper"] {
+  background: var(--icu-raised);
+}
+
+/* -- metrics ------------------------------------------------------------------------ */
+
+[data-testid="stMetric"] {
+  background: transparent;
+  padding: 0.1rem 0.2rem;
+}
+
+[data-testid="stMetricLabel"] p {
+  color: var(--icu-ink-3);
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+}
+
+[data-testid="stMetricValue"] {
+  color: var(--icu-ink);
+  font-size: 1.85rem;
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.15;
+}
+
+[data-testid="stMetricDelta"] {
+  font-size: 0.78rem;
+  font-variant-numeric: tabular-nums;
+}
+
+/* -- typography --------------------------------------------------------------------- */
+
+h1, h2, h3, h4 {
+  color: var(--icu-ink);
+  letter-spacing: -0.01em;
+}
+
+h1 { font-size: 1.6rem; font-weight: 680; }
+h2 { font-size: 1.18rem; font-weight: 650; }
+h3 { font-size: 1.0rem; font-weight: 640; }
+
+p, li, label, .stMarkdown {
+  color: var(--icu-ink-2);
+}
+
+code {
+  background: var(--icu-raised);
+  color: var(--icu-ink-2);
+  border: 1px solid var(--icu-border);
+  border-radius: 4px;
+  padding: 0.05rem 0.3rem;
+  font-size: 0.82em;
+}
+
+/* -- tabs --------------------------------------------------------------------------- */
+
+.stTabs [data-baseweb="tab-list"] {
+  gap: 0.15rem;
+  border-bottom: 1px solid var(--icu-border);
+}
+
+.stTabs [data-baseweb="tab"] {
+  background: transparent;
+  color: var(--icu-ink-3);
+  border-radius: 8px 8px 0 0;
+  padding: 0.4rem 0.9rem;
+  font-weight: 600;
+  font-size: 0.86rem;
+}
+
+.stTabs [aria-selected="true"] {
+  background: var(--icu-surface);
+  color: var(--icu-ink) !important;
+}
+
+.stTabs [data-baseweb="tab-highlight"] {
+  background: #3987e5;
+}
+
+/* -- inputs ------------------------------------------------------------------------- */
+
+.stSelectbox div[data-baseweb="select"] > div,
+.stMultiSelect div[data-baseweb="select"] > div,
+.stNumberInput input,
+.stTextInput input {
+  background: var(--icu-raised);
+  border-color: var(--icu-border-strong);
+  color: var(--icu-ink);
+}
+
+.stButton button,
+.stFormSubmitButton button,
+.stDownloadButton button {
+  background: var(--icu-raised);
+  border: 1px solid var(--icu-border-strong);
+  color: var(--icu-ink-2);
+  border-radius: 8px;
+  font-weight: 600;
+  font-size: 0.84rem;
+  transition: border-color 120ms ease, color 120ms ease;
+}
+
+.stButton button:hover,
+.stFormSubmitButton button:hover,
+.stDownloadButton button:hover {
+  border-color: #3987e5;
+  color: var(--icu-ink);
+}
+
+/* A primary button is the one destructive-ish action per view; make it findable. */
+.stButton button[kind="primary"],
+.stFormSubmitButton button[kind="primary"] {
+  background: #1f5fa8;
+  border-color: #3987e5;
+  color: #ffffff;
+}
+
+/* -- tables ------------------------------------------------------------------------- */
+
+[data-testid="stDataFrame"] {
+  border: 1px solid var(--icu-border);
+  border-radius: 8px;
+}
+
+/* -- alert callouts ----------------------------------------------------------------- */
+
+[data-testid="stAlert"] {
+  border-radius: 8px;
+  border: 1px solid var(--icu-border-strong);
+}
+
+/* -- charts ------------------------------------------------------------------------- */
+
+/* Altair draws on its own surface; keep the wrapper from adding a second one. */
+[data-testid="stVegaLiteChart"] {
+  background: transparent;
+}
+
+/* -- misc --------------------------------------------------------------------------- */
+
+hr {
+  border-color: var(--icu-border);
+  margin: 0.9rem 0;
+}
+
+[data-testid="stExpander"] details {
+  background: var(--icu-surface);
+  border: 1px solid var(--icu-border);
+  border-radius: 8px;
+}
+
+[data-testid="stExpander"] summary:hover {
+  color: var(--icu-ink);
+}
+
+/* Streamlit's own chrome adds vertical space this layout does not need. */
+[data-testid="stElementToolbar"] { display: none; }
+
+footer, #MainMenu { visibility: hidden; }
+
+/* Respect a reader who has asked for less motion; nothing here is essential. */
+@media (prefers-reduced-motion: reduce) {
+  * { transition: none !important; animation: none !important; }
+}
+
+/* Forced-colours mode throws our palette away, so lean on the border + glyph instead. */
+@media (forced-colors: active) {
+  [data-testid="stVerticalBlockBorderWrapper"] { border: 1px solid CanvasText !important; }
+}

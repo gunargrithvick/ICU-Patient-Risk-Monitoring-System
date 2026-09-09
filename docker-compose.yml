@@ -1,0 +1,126 @@
+# Two services, one image, one install.
+#
+#   docker compose --profile setup run --rm bootstrap   # build a dataset + train a model
+#   docker compose up -d                                # API on :8000, dashboard on :8501
+#   docker compose --profile ci run --rm test           # lint + format + suite on Linux
+#
+# `bootstrap` is optional. Without it there is no artefact, the registry reports the model
+# as unavailable, and both services run on NEWS2 alone - a supported state, not a broken one.
+#
+# The two services each run their own ward: the dashboard builds a MonitoringEngine
+# in-process rather than polling the API, so live bed state is per-process. What they DO
+# share is the ledger - both write the same SQLite file, WAL-journalled precisely so one's
+# writer does not block the other's reader (see storage/database.py). Acknowledge an alert
+# in the dashboard and the API's /alerts history shows the signature; the beds themselves
+# tick independently.
+
+x-service: &service
+  build:
+    context: .
+    dockerfile: Dockerfile
+    target: runtime
+    args:
+      # '[vision]' adds YOLO and ~800 MB of Torch. Left off, the detector falls back to a
+      # NumPy background-subtraction backend and the UI says which one is running.
+      EXTRAS: ""
+  image: icu-monitor:2.0.0
+  restart: unless-stopped
+  env_file:
+    - path: .env
+      required: false
+  environment: &environment
+    ICU_ENVIRONMENT: docker
+    ICU_PROJECT_ROOT: /app
+    ICU_BED_COUNT: ${ICU_BED_COUNT:-6}
+    ICU_TICK_SECONDS: ${ICU_TICK_SECONDS:-2.0}
+    ICU_SIMULATION_SEED: ${ICU_SIMULATION_SEED:-20260905}
+    # No camera device is passed through, so ask for the synthetic ward scene explicitly
+    # rather than letting `auto` probe for one and log a failure first.
+    ICU_FRAME_SOURCE: ${ICU_FRAME_SOURCE:-synthetic}
+    ICU_DETECTOR: ${ICU_DETECTOR:-auto}
+    ICU_DATABASE_URL: sqlite:////app/data/icu_monitor.db
+    ICU_LOG_LEVEL: ${ICU_LOG_LEVEL:-INFO}
+    # SECURITY: unset leaves every /api/v1 route open. The published ports below are bound
+    # to the loopback interface for exactly that reason. Set ICU_API_KEY in .env before
+    # changing the bind address or putting either service behind a public proxy.
+    ICU_API_KEY: ${ICU_API_KEY:-}
+  volumes:
+    - icu-data:/app/data
+    - icu-artifacts:/app/artifacts
+  logging:
+    driver: json-file
+    options:
+      max-size: "10m"
+      max-file: "3"
+
+services:
+  api:
+    <<: *service
+    container_name: icu-api
+    ports:
+      # 127.0.0.1 on purpose: an unauthenticated ward API should not be reachable from the
+      # LAN by default. Drop the prefix once ICU_API_KEY is set.
+      #
+      # The host-side variable is deliberately not ICU_API_PORT - that one is read by
+      # Settings inside the container, and reusing it here would move the published port
+      # and the listening port in lockstep, which is never what you want.
+      - "127.0.0.1:${API_HOST_PORT:-8000}:8000"
+    command: ["icu-monitor", "serve"]
+
+  dashboard:
+    <<: *service
+    container_name: icu-dashboard
+    ports:
+      - "127.0.0.1:${DASHBOARD_HOST_PORT:-8501}:8501"
+    # Streamlit owns the process rather than being a child of the CLI, so `docker stop`
+    # reaches it directly instead of waiting out the 10 s grace period.
+    command:
+      - streamlit
+      - run
+      - app.py
+      - --server.port=8501
+      - --server.address=0.0.0.0
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - |
+          import sys, urllib.request
+          sys.exit(0 if urllib.request.urlopen("http://127.0.0.1:8501/_stcore/health", timeout=4).status == 200 else 1)
+      interval: 30s
+      timeout: 5s
+      start_period: 25s
+      retries: 3
+
+  # ------------------------------------------------------------------ one-shot bootstrap
+  bootstrap:
+    <<: *service
+    container_name: icu-bootstrap
+    profiles: ["setup"]
+    restart: "no"
+    # It serves nothing, so the image's HTTP healthcheck would sit there failing.
+    healthcheck:
+      disable: true
+    # --synthetic generates a cohort with the simulator. Drop it once a real PhysioNet
+    # extract is mounted at /app/data/raw, and the same command reads that instead.
+    command:
+      - sh
+      - -c
+      - "icu-monitor etl --synthetic --stays 900 && icu-monitor train"
+
+  # ------------------------------------------------------------------------------- tests
+  test:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: test
+    image: icu-monitor:test
+    profiles: ["ci"]
+    restart: "no"
+    environment:
+      PYTHONIOENCODING: utf-8
+
+volumes:
+  icu-data:
+  icu-artifacts:

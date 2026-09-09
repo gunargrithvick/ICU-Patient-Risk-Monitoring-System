@@ -1,0 +1,29 @@
+# Streamlit's own configuration. Committed on purpose: the dashboard is dark-only (see
+# src/icu_monitor/ui/theme.py for why - the risk palette was validated against #141a21 and
+# is not a colour flip away from working on white), so the theme is pinned here rather than
+# left to whatever the viewer's OS reports. Hosted Streamlit reads this file too.
+
+[theme]
+base = "dark"
+primaryColor = "#3987e5"           # SERIES[0]
+backgroundColor = "#0b0f14"        # theme.PAGE_BG
+secondaryBackgroundColor = "#141a21"  # theme.SURFACE - the validator's reference surface
+textColor = "#f5f7fa"              # theme.INK
+font = "sans serif"
+
+[server]
+headless = true                    # never try to open a browser; containers have none
+runOnSave = false
+enableCORS = false
+enableXsrfProtection = true
+maxUploadSize = 20                 # nothing here accepts a large upload
+
+[browser]
+gatherUsageStats = false           # a ward display should not phone home
+
+[client]
+toolbarMode = "minimal"            # hide the developer menu on a wall-mounted screen
+showErrorDetails = true            # a silent failure on a monitoring tool is worse
+
+[logger]
+level = "info"

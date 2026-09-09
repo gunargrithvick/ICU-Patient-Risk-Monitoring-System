@@ -1,0 +1,49 @@
+# What never needs to reach the build context.
+#
+# The image is built from `pyproject.toml` + `src/`. Everything else here either bloats the
+# context (the raw archive, model weights, virtualenvs) or would poison the image with a
+# host-specific value (`.env`, caches compiled against another platform's Python).
+
+.git/
+.github/
+.gitignore
+
+# Environments and caches - a host .venv is the wrong platform for the image.
+.venv/
+venv/
+env/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage*
+htmlcov/
+coverage.xml
+*.egg-info/
+build/
+dist/
+
+# Secrets. The container gets its configuration from compose/env, never from a baked file.
+.env
+.env.*
+
+# Data and artefacts are volumes, not layers. `docker compose run bootstrap` fills them.
+data/
+artifacts/
+*.db
+*.sqlite*
+
+# ~6 MB of YOLO weights, and the vision extra is not installed in the default image.
+*.pt
+*.onnx
+*.pkl
+*.joblib
+
+# Docs. README.md is deliberately NOT here: `pyproject.toml` declares
+# `readme = "README.md"`, so the build fails without it.
+docs/
+notebooks/
+
+.DS_Store
+Thumbs.db

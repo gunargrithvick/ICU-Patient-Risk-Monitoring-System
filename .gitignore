@@ -1,0 +1,63 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+*.egg-info/
+.eggs/
+pip-wheel-metadata/
+
+# Environments
+.venv/
+venv/
+env/
+.python-version
+
+# Tooling caches
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+
+# Secrets. `.env.example` is committed; `.env` never is - it is where ICU_API_KEY lives.
+.env
+.env.*
+!.env.example
+
+# Data and artefacts are reproducible, and the raw archive is large.
+#
+# `icu-monitor etl` rebuilds data/processed/, `icu-monitor train` rebuilds artifacts/.
+# Committing a 40 MB parquet and a pickled estimator makes the history unusable and the
+# clone slow, and a stale artefact in a branch is worse than no artefact: the registry
+# reports "model unavailable" and the app runs on NEWS2, which is a supported state.
+data/raw/
+data/processed/
+data/interim/
+artifacts/
+!artifacts/.gitkeep
+
+# The SQLite ledger is per-run state, not source.
+*.db
+*.sqlite
+*.sqlite3
+
+# Model weights are optional local runtime files and are not versioned.
+*.pt
+*.onnx
+*.pkl
+*.joblib
+
+# OS / editor
+.DS_Store
+Thumbs.db
+desktop.ini
+.idea/
+.vscode/*
+!.vscode/settings.json
+*.swp
