@@ -85,6 +85,8 @@ class HistoryStore(Protocol):
         self, *, patient_id: str | None = ..., open_only: bool = ..., limit: int = ...
     ) -> list[Alert]: ...
 
+    def patients(self) -> list[Patient]: ...
+
 
 @dataclass(slots=True)
 class WardSnapshot:
@@ -112,14 +114,17 @@ class WardSnapshot:
 
     @property
     def mean_score(self) -> float:
-        if not self.beds:
+        scores = [
+            bed.assessment.composite_score
+            for bed in self.beds
+            if bed.assessment.level is not RiskLevel.UNKNOWN
+        ]
+        if not scores:
             return 0.0
-        return sum(bed.assessment.composite_score for bed in self.beds) / len(self.beds)
+        return sum(scores) / len(scores)
 
     def level_counts(self) -> dict[RiskLevel, int]:
-        counts = dict.fromkeys(
-            (RiskLevel.LOW, RiskLevel.MEDIUM, RiskLevel.HIGH, RiskLevel.CRITICAL), 0
-        )
+        counts = dict.fromkeys(RiskLevel, 0)
         for bed in self.beds:
             if bed.level in counts:
                 counts[bed.level] += 1
@@ -232,6 +237,30 @@ class MonitoringEngine:
         window = self._config.history_window
         restored_any = False
         levels: dict[str, RiskLevel] = {}
+
+        # The ledger stores the last operator-controlled patient record as well as the
+        # observations. Restore it before the first tick so a restart does not silently
+        # revert oxygen, SpO2 scale, trajectory, or demographics to simulator defaults.
+        try:
+            stored_patients = {patient.patient_id: patient for patient in store.patients()}
+        except Exception as exc:  # pragma: no cover - backend specific
+            logger.warning("Could not restore patient records (%s).", exc)
+            stored_patients = {}
+        for patient_id, patient in self.provider.patients.items():
+            stored = stored_patients.get(patient_id)
+            if stored is None:
+                continue
+            patient.bed = stored.bed
+            patient.display_name = stored.display_name
+            patient.age = stored.age
+            patient.sex = stored.sex
+            patient.primary_diagnosis = stored.primary_diagnosis
+            patient.state = stored.state
+            patient.on_supplemental_oxygen = stored.on_supplemental_oxygen
+            patient.spo2_scale = stored.spo2_scale
+            patient.admitted_at = stored.admitted_at
+            patient.notes = stored.notes
+            restored_any = True
 
         for patient_id in self.provider.patients:
             try:

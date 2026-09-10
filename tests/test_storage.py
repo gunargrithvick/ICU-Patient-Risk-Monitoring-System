@@ -27,7 +27,6 @@ from icu_monitor.core.types import (
     Alert,
     AlertKind,
     ClinicalState,
-    Consciousness,
     Patient,
     RiskAssessment,
     RiskLevel,
@@ -753,13 +752,13 @@ def test_a_row_with_holes_reads_as_a_usable_patient(repo: Repository) -> None:
     assert stored.admitted_at is not None
 
 
-def test_a_null_consciousness_reads_as_alert(repo: Repository, config: Settings) -> None:
-    """``Vitals.consciousness`` is not optional, so the column's ``NULL`` maps to its default."""
+def test_a_null_consciousness_stays_missing(repo: Repository, config: Settings) -> None:
+    """A missing ACVPU observation must not be rewritten as a reassuring Alert."""
     record(repo, config)
     with session_scope(build_session_factory(repo.engine)) as session:
         session.scalars(select(VitalsRow)).one().consciousness = None
 
-    assert repo.recent_vitals("P001")[-1].consciousness is Consciousness.ALERT
+    assert repo.recent_vitals("P001")[-1].consciousness is None
 
 
 def test_a_severity_the_code_no_longer_knows_reads_as_unknown(

@@ -20,7 +20,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 
 import numpy as np
@@ -215,7 +215,7 @@ def train(
     )
     say(f"Held-out: {report.headline}")
 
-    trained_at = datetime.now().astimezone()
+    trained_at = datetime.now(timezone.utc)
     version = f"{trained_at:%Y%m%d-%H%M}-{best.name}"
     dataset_summary = {
         **provenance,

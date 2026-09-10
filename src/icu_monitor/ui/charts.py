@@ -100,10 +100,13 @@ def risk_distribution(counts: Mapping[str, int]) -> Any:
     One series, so no legend: the level names are the axis. Direct labels carry the counts
     because reading a bed count off a gridline is needless work.
     """
+    order = [*theme.LEVEL_ORDER]
+    if counts.get("UNKNOWN", 0):
+        order.append("UNKNOWN")
     frame = pd.DataFrame(
         {
-            "level": list(theme.LEVEL_ORDER),
-            "beds": [int(counts.get(k, 0)) for k in theme.LEVEL_ORDER],
+            "level": order,
+            "beds": [int(counts.get(k, 0)) for k in order],
         }
     )
     frame["label"] = frame["level"].map(theme.level_glyph) + " " + frame["level"].str.title()
@@ -122,8 +125,8 @@ def risk_distribution(counts: Mapping[str, int]) -> Any:
         color=alt.Color(
             "level:N",
             scale=alt.Scale(
-                domain=list(theme.LEVEL_ORDER),
-                range=[theme.level_color(k) for k in theme.LEVEL_ORDER],
+                domain=order,
+                range=[theme.level_color(k) for k in order],
             ),
             legend=None,
         ),

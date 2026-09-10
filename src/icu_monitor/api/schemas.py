@@ -99,7 +99,15 @@ class BatchScoreRequest(BaseModel):
 
 
 class AcknowledgeRequest(BaseModel):
-    by: str = Field(default="operator", max_length=64)
+    by: str = Field(default="operator", min_length=1, max_length=64)
+
+    @field_validator("by")
+    @classmethod
+    def _non_blank_actor(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("by must contain a non-blank actor name")
+        return value
 
 
 class StateRequest(BaseModel):

@@ -72,6 +72,7 @@ class Repository:
         self._sessions = build_session_factory(self.engine)
         self._writes = 0
         self.write_errors = 0
+        self._closed = False
 
     # -- upserts -----------------------------------------------------------------------
 
@@ -297,6 +298,14 @@ class Repository:
             ).all()
         return [_to_alert(row) for row in rows]
 
+    def alert(self, alert_id: int) -> Alert | None:
+        """Read one alert by its database-wide identifier."""
+        with session_scope(self._sessions) as session:
+            row = session.scalars(
+                select(AlertRow).where(AlertRow.alert_id == alert_id).limit(1)
+            ).first()
+        return _to_alert(row) if row is not None else None
+
     def alert_counts_by_kind(self, *, since_hours: float = 24.0) -> dict[str, int]:
         cutoff = utcnow() - timedelta(hours=max(0.0, since_hours))
         with session_scope(self._sessions) as session:
@@ -330,6 +339,8 @@ class Repository:
 
     def healthy(self) -> bool:
         """A cheap round-trip, used by ``/ready``."""
+        if self._closed:
+            return False
         try:
             with session_scope(self._sessions) as session:
                 session.execute(select(func.count()).select_from(PatientRow))
@@ -365,7 +376,9 @@ class Repository:
                 session.execute(delete(table))
 
     def close(self) -> None:
-        self.engine.dispose()
+        if not self._closed:
+            self._closed = True
+            self.engine.dispose()
 
 
 # --------------------------------------------------------------------------------------
@@ -445,9 +458,7 @@ def _to_vitals(row: VitalsRow) -> Vitals:
         bp_diastolic=row.bp_diastolic,
         resp_rate=row.resp_rate,
         temperature=row.temperature,
-        consciousness=(
-            Consciousness(row.consciousness) if row.consciousness else Consciousness.ALERT
-        ),
+        consciousness=(Consciousness(row.consciousness) if row.consciousness else None),
         on_supplemental_oxygen=bool(row.on_supplemental_oxygen),
         gcs=row.gcs,
         recorded_at=_as_utc(row.recorded_at),

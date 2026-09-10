@@ -1,10 +1,10 @@
 """``streamlit run app.py`` - the entry point Streamlit Community Cloud looks for.
 
-The real dashboard lives in :mod:`icu_monitor.ui.app`. This file exists because hosted
-Streamlit runs a script at the repository root and cannot be told to install the project
-first, so the ``src`` layout has to be put on ``sys.path`` by hand. When the package *is*
-installed (``pip install -e .``) the insert is a no-op and ``icu-monitor dashboard`` is the
-better entry point.
+The real dashboard lives in :mod:`icu_monitor.ui.app`. This repository-root shim is the
+entry point used by Streamlit hosting, while the ``src`` path fallback also keeps a direct
+checkout runnable before installation. Hosted installs use ``requirements.txt``; when the
+package is already installed (``python -m pip install -e .``), the path insert is a no-op and
+``python -m icu_monitor dashboard`` is the equivalent command-line entry point.
 """
 
 from __future__ import annotations

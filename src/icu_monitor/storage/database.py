@@ -232,7 +232,7 @@ def _migrate_to_v1(session: SASession) -> None:
 
 
 #: Ordered migration steps, keyed by the version each one produces.
-_MIGRATIONS: dict[int, "Callable[[SASession], None]"] = {
+_MIGRATIONS: dict[int, Callable[[SASession], None]] = {
     1: _migrate_to_v1,
 }
 

@@ -486,6 +486,17 @@ class NullDetector:
         return []
 
 
+class UnavailableDetector(NullDetector):
+    """A detector explicitly requested by the operator but unavailable at runtime."""
+
+    def __init__(self, description: str) -> None:
+        self._description = description
+
+    @property
+    def description(self) -> str:
+        return self._description
+
+
 # --------------------------------------------------------------------------------------
 # Factory
 # --------------------------------------------------------------------------------------
@@ -504,7 +515,8 @@ def build_detector(config: Settings | None = None) -> Detector:
         if yolo.available:
             return yolo
         if choice == "yolo":
-            logger.warning("YOLO requested but unavailable; using the heuristic detector.")
+            logger.warning("YOLO requested but unavailable; detection is disabled.")
+            return UnavailableDetector(yolo.description)
 
     return HeuristicDetector()
 
@@ -527,6 +539,7 @@ __all__ = [
     "Detector",
     "HeuristicDetector",
     "NullDetector",
+    "UnavailableDetector",
     "YoloDetector",
     "build_detector",
     "timed_detect",

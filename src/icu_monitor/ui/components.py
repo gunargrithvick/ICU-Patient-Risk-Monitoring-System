@@ -70,7 +70,7 @@ def status_badge(level: RiskLevel | str, *, size: str = "0.78rem") -> str:
     key = str(getattr(level, "value", level)).upper()
     colour = theme.level_color(key)
     glyph = theme.level_glyph(key)
-    label = key.title()
+    label = RiskLevel.coerce(key).label
     return (
         f"<span style='display:inline-flex;align-items:center;gap:0.34em;"
         f"background:{colour}22;border:1px solid {colour}66;color:{colour};"

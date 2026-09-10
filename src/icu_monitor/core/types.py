@@ -280,7 +280,7 @@ class Vitals:
     bp_diastolic: float | None = None
     resp_rate: float | None = None
     temperature: float | None = None
-    consciousness: Consciousness = Consciousness.ALERT
+    consciousness: Consciousness | None = None
     on_supplemental_oxygen: bool = False
     gcs: float | None = None
     recorded_at: datetime = field(default_factory=utcnow)
@@ -322,7 +322,9 @@ class Vitals:
             "temperature": self.temperature,
             "map": self.map_mmhg,
             "shock_index": self.shock_index,
-            "consciousness": self.consciousness.value,
+            # Keep the display payload backwards-compatible while preserving missingness in
+            # the scoring and persistence layers.
+            "consciousness": self.consciousness.value if self.consciousness else "A",
             "on_supplemental_oxygen": self.on_supplemental_oxygen,
             "gcs": self.gcs,
             "recorded_at": self.recorded_at.isoformat(),

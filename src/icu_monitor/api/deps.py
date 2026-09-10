@@ -132,7 +132,7 @@ class AppState:
             components.append(
                 {
                     "name": "vision",
-                    "ready": engine.vision is not None,
+                    "ready": engine.vision is not None and engine.vision.enabled,
                     "detail": engine.vision_label,
                 }
             )

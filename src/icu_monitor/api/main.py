@@ -254,13 +254,20 @@ def patient_vitals(
 ) -> dict[str, Any]:
     _bed_or_404(state, patient_id)  # 404 before returning an empty series
     engine = state.engine()
-    history = engine.history(patient_id)[-limit:]
-    scores = engine.score_history(patient_id)[-limit:]
+    repository = state.repository()
+    if repository is not None:
+        history = repository.recent_vitals(patient_id, limit=limit)
+        scores = repository.score_series(patient_id, limit=limit)
+    else:
+        history = engine.history(patient_id)[-limit:]
+        scores = engine.score_history(patient_id)[-limit:]
     return {
         "patient_id": patient_id,
         "count": len(history),
         "vitals": [v.as_dict() for v in history],
-        "scores": [{"at": at.isoformat(), "composite_score": round(s, 2)} for at, s in scores],
+        "scores": [
+            {"at": at.isoformat(), "composite_score": round(s, 2)} for at, s, _level in scores
+        ],
     }
 
 
@@ -314,16 +321,21 @@ def list_alerts(
     """
     state.snapshot()  # make sure the ledger reflects a current tick
     manager = state.engine().alerts
+    repository = state.repository()
     if active_only:
         records = manager.active
-    elif open_only:
-        records = manager.open_alerts
+    elif repository is not None:
+        records = repository.alerts(patient_id=patient_id, open_only=open_only, limit=limit)
     else:
-        records = manager.history
-    if patient_id:
-        records = tuple(a for a in records if a.patient_id == patient_id)
+        records = manager.open_alerts if open_only else manager.history
+        if patient_id:
+            records = tuple(a for a in records if a.patient_id == patient_id)
+    counts = manager.counts()
+    if repository is not None:
+        stored = repository.stats()
+        counts.update({"open": stored["open_alerts"], "history": stored["alerts"]})
     return {
-        "counts": manager.counts(),
+        "counts": counts,
         "count": len(records[:limit]),
         "alerts": [a.as_dict() for a in records[:limit]],
     }
@@ -338,10 +350,12 @@ def acknowledge_all(
     patient_id: Annotated[str | None, Query(max_length=32)] = None,
 ) -> api.AcknowledgeResponse:
     by = (request or api.AcknowledgeRequest()).by
-    count = state.engine().alerts.acknowledge_all(patient_id=patient_id, by=by)
+    state.engine().alerts.acknowledge_all(patient_id=patient_id, by=by)
     repository = state.repository()
     if repository is not None:
-        repository.acknowledge_all(patient_id=patient_id, by=by)
+        count = repository.acknowledge_all(patient_id=patient_id, by=by)
+    else:
+        count = state.engine().alerts.counts()["open"]
     return api.AcknowledgeResponse(acknowledged=count, by=by)
 
 
@@ -363,13 +377,18 @@ def acknowledge(
     manager = state.engine().alerts
     was_open = any(a.alert_id == alert_id and a.is_open for a in manager.history)
     alert = manager.acknowledge(alert_id, by=by)
-    if alert is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, detail=f"No alert with id {alert_id}.")
     repository = state.repository()
     if repository is not None:
-        repository.acknowledge(alert_id, by=by)
+        stored = repository.alert(alert_id)
+        if alert is None:
+            alert = stored
+        acknowledged = repository.acknowledge(alert_id, by=by)
+    else:
+        acknowledged = 1 if was_open else 0
+    if alert is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail=f"No alert with id {alert_id}.")
     return api.AcknowledgeResponse(
-        acknowledged=1 if was_open else 0,
+        acknowledged=acknowledged,
         alert_id=alert_id,
         by=alert.acknowledged_by or by,
     )

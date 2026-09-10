@@ -798,7 +798,7 @@ def test_a_badge_states_the_level_three_ways(level: str) -> None:
     dropped the glyph or the word would make the palette itself non-compliant."""
     badge = ui.status_badge(level)
     assert theme.level_glyph(level) in badge
-    assert level.title() in badge
+    assert RiskLevel.coerce(level).label in badge
     assert theme.level_color(level) in badge
 
 
@@ -1839,6 +1839,15 @@ def test_the_settings_page_says_the_api_is_unauthenticated_when_it_is(tmp_path: 
     assert "requires a matching" in text
     assert "s3cret" not in text  # the value is never echoed, only its presence
     assert "`ICU_API_KEY` is not set" not in "\n".join(str(w.value) for w in with_key.warning)
+
+
+def test_the_settings_page_redacts_database_passwords() -> None:
+    """A database URL is useful diagnostics, but its password must never reach the browser."""
+    redacted = settings_view._safe_database_url(
+        "postgresql+psycopg://icu:do-not-leak@db.example:5432/ward"
+    )
+    assert "do-not-leak" not in redacted
+    assert redacted == "postgresql+psycopg://icu:***@db.example:5432/ward"
 
 
 def test_the_system_panel_names_every_component_and_its_state(tmp_path: Path) -> None:

@@ -335,8 +335,8 @@ def test_a_disconnected_arterial_line_does_not_divide_by_zero():
     assert make_vitals(heart_rate=None, bp_systolic=100.0).shock_index is None
 
 
-def test_measured_channels_counts_the_five_that_news2_needs():
-    """Diastolic and GCS are deliberately excluded - neither is a NEWS2 parameter."""
+def test_measured_channels_counts_the_five_physiology_channels():
+    """Diastolic, GCS, and ACVPU are tracked separately from the vital-sign channels."""
     assert make_vitals().measured_channels == 5
     assert make_vitals(spo2=None, temperature=None).measured_channels == 3
     assert Vitals().measured_channels == 0

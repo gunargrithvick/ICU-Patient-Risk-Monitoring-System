@@ -19,9 +19,9 @@ Here a source is anything satisfying :class:`FrameSource`. Four ship:
 ``NullSource``
     Explicitly off. The dashboard shows the channel as offline; nothing breaks.
 
-:func:`build_frame_source` resolves configuration to an instance and falls back
-gracefully, so ``ICU_FRAME_SOURCE=camera`` on a machine with no camera degrades to the
-synthetic ward with a warning instead of crashing.
+:func:`build_frame_source` resolves configuration to an instance. ``auto`` may use the
+synthetic ward when hardware is absent; an explicit camera or video request stays offline
+when it cannot be honoured so a real feed is never confused with generated footage.
 """
 
 from __future__ import annotations
@@ -564,6 +564,32 @@ class NullSource:
         return None
 
 
+class UnavailableSource:
+    """A requested source that could not be opened.
+
+    Explicit configuration must fail visibly. Silently replacing a missing camera or
+    unreadable clip with synthetic footage can make an operator believe they are watching
+    a real bedside feed.
+    """
+
+    def __init__(self, description: str) -> None:
+        self._description = description
+
+    @property
+    def description(self) -> str:
+        return self._description
+
+    @property
+    def available(self) -> bool:
+        return False
+
+    def read(self) -> Frame | None:
+        return None
+
+    def close(self) -> None:
+        return None
+
+
 # --------------------------------------------------------------------------------------
 # Factory
 # --------------------------------------------------------------------------------------
@@ -585,7 +611,8 @@ def build_frame_source(config: Settings | None = None) -> FrameSource:
             return camera
         camera.close()
         if choice == "camera":
-            logger.warning("Camera requested but unavailable; using the synthetic ward.")
+            logger.warning("Camera requested but unavailable; vision is disabled.")
+            return UnavailableSource(f"Camera {cfg.camera_index} unavailable")
 
     if choice in {"video", "auto"} and cfg.video_path is not None:
         video = VideoFileSource(cfg.video_path)
@@ -593,7 +620,12 @@ def build_frame_source(config: Settings | None = None) -> FrameSource:
             return video
         video.close()
         if choice == "video":
-            logger.warning("Video requested but unreadable; using the synthetic ward.")
+            logger.warning("Video requested but unreadable; vision is disabled.")
+            return UnavailableSource(f"Video source unavailable: {cfg.video_path}")
+
+    if choice == "video":
+        logger.warning("Video requested without a video_path; vision is disabled.")
+        return UnavailableSource("Video source requested but no video_path was configured")
 
     return SyntheticSource(
         width=cfg.camera_width, height=cfg.camera_height, seed=cfg.simulation_seed % 10_000
@@ -608,6 +640,7 @@ __all__ = [
     "FrameSource",
     "NullSource",
     "SyntheticSource",
+    "UnavailableSource",
     "VideoFileSource",
     "build_frame_source",
 ]

@@ -339,10 +339,10 @@ def test_unknown_metadata_keys_are_ignored(config: Settings) -> None:
     assert loaded.version == "20260905-1203-test"
 
 
-def test_drifted_schema_loads_with_a_warning_rather_than_refusing(config: Settings, caplog) -> None:
-    """A stale artefact is still better than nothing, but it must say so in the log."""
+def test_drifted_schema_is_refused_with_a_warning(config: Settings, caplog) -> None:
+    """A stale artefact must never produce plausible predictions from the wrong schema."""
     save_model(Recording(), metadata(feature_names=["heart_rate_last"]), config=config)
-    assert load_model(config=config) is not None
+    assert load_model(config=config) is None
     assert "drift" in caplog.text.lower()
 
 

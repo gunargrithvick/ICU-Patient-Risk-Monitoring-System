@@ -5,9 +5,9 @@ three properties that a bare ``joblib.load`` cannot:
 
 1. **The artefact carries its own contract.** Feature names, class order, training
    date, dataset fingerprint, and metrics are saved alongside the estimator. Loading
-   checks the saved feature list against the code's
-   :data:`~icu_monitor.ml.features.FEATURE_NAMES`; a mismatch means the code has moved
-   on since training, and it is reported rather than silently producing garbage.
+   checks the saved feature list and class order against the running code; a mismatch
+   means the code has moved on since training, and the artefact is refused rather than
+   silently producing garbage.
 2. **A missing model is a first-class state, not a crash.** The original project called
    ``joblib.load`` at import time with a relative path, so the app died on any machine
    whose working directory differed. Here the loader returns ``None`` and the UI shows
@@ -20,9 +20,11 @@ from __future__ import annotations
 
 import json
 import logging
+import os
+import uuid
 from copy import deepcopy
 from dataclasses import asdict, dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -67,7 +69,10 @@ class ModelMetadata:
     @property
     def trained_on(self) -> str:
         try:
-            return datetime.fromisoformat(self.trained_at).strftime("%d %b %Y %H:%M UTC")
+            moment = datetime.fromisoformat(self.trained_at)
+            if moment.tzinfo is not None:
+                moment = moment.astimezone(timezone.utc)
+            return moment.strftime("%d %b %Y %H:%M UTC")
         except ValueError:  # pragma: no cover - defensive
             return self.trained_at
 
@@ -102,6 +107,27 @@ class RiskModel:
             "`python -m icu_monitor train`."
         )
 
+    def contract_matches_code(self) -> tuple[bool, str]:
+        """Validate both feature names and class order before inference."""
+        schema_ok, schema_message = self.schema_matches_code()
+        if not schema_ok:
+            return False, schema_message
+        expected = list(ML_RISK_CLASSES)
+        if self._classes != expected:
+            return False, (
+                f"Model class order drift: saved {self._classes!r}, expected {expected!r}. "
+                "Retrain with `python -m icu_monitor train`."
+            )
+        estimator_classes = getattr(self.estimator, "classes_", None)
+        if estimator_classes is not None:
+            try:
+                numeric = [int(value) for value in estimator_classes]
+            except (TypeError, ValueError):
+                return False, "Model estimator exposes an unreadable classes_ contract."
+            if numeric != list(range(len(expected))):
+                return False, f"Model estimator class order is invalid: {numeric!r}."
+        return True, "Feature schema and class order match the running code."
+
     # -- inference ---------------------------------------------------------------------
 
     def _align(self, frame: pd.DataFrame) -> pd.DataFrame:
@@ -118,6 +144,13 @@ class RiskModel:
             return []
         aligned = self._align(frame)
         probabilities = np.asarray(self.estimator.predict_proba(aligned), dtype=float)
+        if probabilities.ndim != 2 or not 1 <= probabilities.shape[1] <= len(self._classes):
+            raise ValueError(
+                f"Model returned {probabilities.shape} probabilities for "
+                f"one to {len(self._classes)} classes."
+            )
+        if not np.isfinite(probabilities).all() or (probabilities < 0).any():
+            raise ValueError("Model returned non-finite or negative probabilities.")
         predictions: list[MLPrediction] = []
         for row in probabilities:
             distribution = {
@@ -181,17 +214,14 @@ def save_model(
     """Write the estimator bundle and the human-readable sidecar files."""
     cfg = config or default_settings
     cfg.ensure_directories()
-    joblib.dump(
+    _atomic_joblib_dump(
         {"format": BUNDLE_FORMAT, "estimator": estimator, "metadata": metadata.as_dict()},
         cfg.model_path,
-        compress=3,
     )
-    cfg.metrics_path.write_text(
-        json.dumps(metadata.metrics, indent=2, default=str), encoding="utf-8"
-    )
-    cfg.model_card_path.write_text(
+    _atomic_text_write(cfg.metrics_path, json.dumps(metadata.metrics, indent=2, default=str))
+    _atomic_text_write(
+        cfg.model_card_path,
         json.dumps(build_model_card(metadata, config=cfg), indent=2, default=str),
-        encoding="utf-8",
     )
     logger.info("Saved model %s to %s", metadata.version, cfg.model_path)
     return cfg.model_path
@@ -247,11 +277,31 @@ def load_model(*, config: Settings | None = None, refresh: bool = False) -> Risk
     )
 
     model = RiskModel(bundle["estimator"], metadata)
-    matches, message = model.schema_matches_code()
+    matches, message = model.contract_matches_code()
     if not matches:
-        logger.warning("%s", message)
+        logger.warning("Refusing model at %s: %s", path, message)
+        return None
     _CACHE[key] = (stamp, model)
     return model
+
+
+def _atomic_joblib_dump(bundle: dict[str, Any], destination: Path) -> None:
+    """Write a complete model before replacing the live artefact."""
+    temporary = destination.with_name(f".{destination.name}.{uuid.uuid4().hex}.tmp")
+    try:
+        joblib.dump(bundle, temporary, compress=3)
+        os.replace(temporary, destination)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def _atomic_text_write(destination: Path, content: str) -> None:
+    temporary = destination.with_name(f".{destination.name}.{uuid.uuid4().hex}.tmp")
+    try:
+        temporary.write_text(content, encoding="utf-8")
+        os.replace(temporary, destination)
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 def clear_cache() -> None:

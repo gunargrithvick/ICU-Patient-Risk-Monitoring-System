@@ -125,16 +125,20 @@ class VisionAnalyzer:
         if previous is None or previous.shape != grey.shape:
             return 0.0
 
-        difference = np.abs(grey - previous)
-        if detection is not None:
+        if detection is None:
+            # With no person box there is no safe region in which to attribute motion to a
+            # patient. Whole-frame movement (lighting, curtains, staff) must not become an
+            # agitation signal.
+            instant = 0.0
+        else:
+            difference = np.abs(grey - previous)
             # Measure motion where the patient is, not across the whole room.
             y0 = max(0, detection.y1)
             y1 = min(grey.shape[0], detection.y2)
             x0 = max(0, detection.x1)
             x1 = min(grey.shape[1], detection.x2)
-            if y1 > y0 and x1 > x0:
-                difference = difference[y0:y1, x0:x1]
-        instant = float(np.clip(difference.mean() / MOTION_SCALE, 0.0, 1.0))
+            region = difference[y0:y1, x0:x1]
+            instant = float(np.clip(region.mean() / MOTION_SCALE, 0.0, 1.0)) if region.size else 0.0
         self._motion_history.append(instant)
         # Smooth: agitation is sustained movement, not one twitch.
         return float(np.mean(self._motion_history))

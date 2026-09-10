@@ -1,0 +1,9 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "functions": {
+    "src/icu_monitor/api/main.py": {
+      "maxDuration": 60,
+      "excludeFiles": "{tests/**,data/**,artifacts/**,build/**,dist/**,.pytest_cache/**,.ruff_cache/**,**/__pycache__/**,**/*.pyc,app.py,Dockerfile,docker-compose.yml,Makefile,.streamlit/**}"
+    }
+  }
+}

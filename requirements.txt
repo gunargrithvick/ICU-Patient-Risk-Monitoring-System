@@ -1,0 +1,4 @@
+# Streamlit hosting and simple pip workflows can install the project from the same
+# dependency source used by the wheel, Docker image, and CI. Keep runtime versions in
+# pyproject.toml so this file cannot drift from the packaged application.
+-e .[postgres]

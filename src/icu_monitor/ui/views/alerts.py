@@ -27,6 +27,10 @@ def render(snapshot: WardSnapshot) -> None:
     engine = app_state.engine()
     manager = engine.alerts
     counts = manager.counts()
+    history = app_state.persisted_alerts()
+    open_alerts = tuple(alert for alert in history if alert.is_open)
+    counts["open"] = len(open_alerts)
+    counts["history"] = len(history)
 
     ui.page_header(
         "Alerts",
@@ -45,7 +49,7 @@ def render(snapshot: WardSnapshot) -> None:
     )
 
     by_kind: dict[str, int] = {}
-    for alert in manager.history:
+    for alert in history:
         by_kind[alert.kind.label] = by_kind.get(alert.kind.label, 0) + 1
     ui.chart_panel(
         "Alert volume by kind",
@@ -85,13 +89,18 @@ def render(snapshot: WardSnapshot) -> None:
                 target = None if patient == "All beds" else patient
                 cleared = app_state.acknowledge_all_alerts(patient_id=target)
                 st.success(f"Acknowledged {cleared} alert(s).")
+                # The button action happens during this same Streamlit run. Refresh the
+                # ledger-backed collections before rendering cards, otherwise the just-cleared
+                # alerts remain visible until the next unrelated interaction.
+                history = app_state.persisted_alerts()
+                open_alerts = tuple(alert for alert in history if alert.is_open)
 
     if scope == "Active":
         alerts = list(manager.active)
     elif scope == "Open":
-        alerts = list(manager.open_alerts)
+        alerts = list(open_alerts)
     else:
-        alerts = list(manager.history)
+        alerts = list(history)
 
     if patient != "All beds":
         alerts = [a for a in alerts if a.patient_id == patient]
@@ -110,7 +119,9 @@ def render(snapshot: WardSnapshot) -> None:
         return
 
     for alert in alerts[:60]:
-        ui.alert_card(alert, on_acknowledge=app_state.acknowledge_alert, key_prefix=f"alerts_{scope}")
+        ui.alert_card(
+            alert, on_acknowledge=app_state.acknowledge_alert, key_prefix=f"alerts_{scope}"
+        )
     if len(alerts) > 60:
         ui.caption(f"Showing the first 60 of {len(alerts)}.")
 

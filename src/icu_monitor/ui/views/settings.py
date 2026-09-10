@@ -15,6 +15,7 @@ from __future__ import annotations
 from typing import get_args
 
 import streamlit as st
+from sqlalchemy.engine import make_url
 
 from icu_monitor.config import DetectorName, FrameSourceName, Settings, VitalsSourceName
 from icu_monitor.storage.repository import Repository
@@ -29,6 +30,17 @@ from icu_monitor.ui import theme
 VITALS_SOURCES: tuple[str, ...] = get_args(VitalsSourceName)
 FRAME_SOURCES: tuple[str, ...] = get_args(FrameSourceName)
 DETECTORS: tuple[str, ...] = get_args(DetectorName)
+
+
+def _safe_database_url(url: str | None) -> str:
+    """Display the database target without exposing a password in the dashboard."""
+    if not url:
+        return "unset"
+    try:
+        return make_url(url).render_as_string(hide_password=True)
+    except Exception:
+        # Never fall back to the raw value: a malformed URL can still contain credentials.
+        return "<configured URL could not be parsed>"
 
 
 def _bounds(field: str, cap: float) -> tuple[float, float]:
@@ -97,7 +109,7 @@ def _system_panel() -> None:
             )
         else:
             ui.definition_list({k: f"{v:,}" for k, v in repository.stats().items()})
-            ui.caption(f"`{settings.database_url}`")
+            ui.caption(f"`{_safe_database_url(settings.database_url)}`")
             trim_col, purge_col = st.columns(2)
             with trim_col:
                 if st.button("Trim to retention limit", width="stretch"):

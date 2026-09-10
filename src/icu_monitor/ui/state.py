@@ -22,6 +22,7 @@ from pydantic import ValidationError
 
 from icu_monitor.api.deps import AppState
 from icu_monitor.config import Settings, get_settings
+from icu_monitor.core.types import Alert
 from icu_monitor.logging_setup import configure_logging
 from icu_monitor.monitoring.engine import MonitoringEngine, WardSnapshot
 
@@ -150,6 +151,20 @@ def acknowledge_all_alerts(*, patient_id: str | None = None, by: str = "dashboar
     return cleared
 
 
+def persisted_alerts(
+    *, patient_id: str | None = None, open_only: bool = False, limit: int = 500
+) -> tuple[Alert, ...]:
+    """Read the shared ledger so another process's alerts and acknowledgements appear here."""
+    current = state()
+    repository = current.repository()
+    if repository is not None:
+        return tuple(repository.alerts(patient_id=patient_id, open_only=open_only, limit=limit))
+    alerts = current.engine().alerts.open_alerts if open_only else current.engine().alerts.history
+    if patient_id is not None:
+        alerts = tuple(alert for alert in alerts if alert.patient_id == patient_id)
+    return tuple(alerts[:limit])
+
+
 def snapshot(*, force: bool = False) -> WardSnapshot:
     """The current ward, advanced first if ``tick_seconds`` have passed."""
     return state().snapshot(force=force)
@@ -183,6 +198,7 @@ __all__ = [
     "current_settings",
     "engine",
     "get_app_state",
+    "persisted_alerts",
     "reset_to_defaults",
     "select_patient",
     "selected_patient",

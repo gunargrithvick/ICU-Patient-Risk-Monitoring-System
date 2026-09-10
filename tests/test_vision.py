@@ -834,7 +834,8 @@ def test_a_camera_request_that_cannot_be_honoured_degrades_to_the_ward(
     deployment on a machine with no camera still starts, with a warning."""
     with caplog.at_level(logging.WARNING, logger="icu_monitor.vision.sources"):
         source = build_frame_source(vision_settings(frame_source="camera"))
-    assert isinstance(source, SyntheticSource)
+    assert source.available is False
+    assert "unavailable" in source.description.lower()
     assert "Camera requested but unavailable" in caplog.text
 
 
@@ -883,15 +884,16 @@ def test_a_video_request_that_cannot_be_honoured_degrades_to_the_ward(
     fake_cv2.opens = False
     with caplog.at_level(logging.WARNING, logger="icu_monitor.vision.sources"):
         source = build_frame_source(vision_settings(frame_source="video", video_path=clip))
-    assert isinstance(source, SyntheticSource)
+    assert source.available is False
+    assert "video" in source.description.lower()
     assert "Video requested but unreadable" in caplog.text
 
 
-def test_a_video_request_without_a_path_falls_back_silently(no_cv2: None) -> None:
-    """Nothing was misconfigured badly enough to warn about - ``video`` with no path is just
-    an incomplete setting, and the ward is the documented default."""
+def test_a_video_request_without_a_path_is_reported_as_unavailable(no_cv2: None) -> None:
+    """An explicit video request must not quietly become generated footage."""
     source = build_frame_source(vision_settings(frame_source="video", video_path=None))
-    assert isinstance(source, SyntheticSource)
+    assert source.available is False
+    assert "no video_path" in source.description
 
 
 # -------------------------------------------------------------------------- HeuristicDetector
@@ -1197,7 +1199,8 @@ def test_yolo_requested_but_unavailable_degrades_loudly(
     where the fallback is the documented behaviour and a warning would be noise."""
     with caplog.at_level(logging.WARNING, logger="icu_monitor.vision.detector"):
         detector = build_detector(vision_settings(detector="yolo"))
-    assert isinstance(detector, HeuristicDetector)
+    assert detector.available is False
+    assert "unavailable" in detector.description.lower()
     assert "YOLO requested but unavailable" in caplog.text
 
 

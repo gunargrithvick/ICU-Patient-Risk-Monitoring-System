@@ -12,7 +12,7 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, master]
   pull_request:
   workflow_dispatch:
 
@@ -62,7 +62,7 @@ jobs:
         # leg, because the UTF-8 stream reconfiguration in logging_setup.py exists for a
         # bug that only reproduces on a cp1252 console and would otherwise go unnoticed.
         os: [ubuntu-latest]
-        python-version: ["3.10", "3.11", "3.12", "3.13"]
+        python-version: ["3.10", "3.11", "3.12", "3.13", "3.14"]
         include:
           - os: windows-latest
             python-version: "3.12"

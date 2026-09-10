@@ -1,11 +1,11 @@
 # ICU Sentinel
 
-**Real-time ICU deterioration monitoring: a validated clinical early-warning score, a machine-learning acuity model, and a bedside vision channel, fused into one explainable risk number per bed.**
+**Real-time ICU deterioration monitoring: a published clinical early-warning score, a machine-learning acuity model, and a bedside vision channel, fused into one explainable risk number per bed.**
 
 [![CI](https://github.com/gunarithvick/icu-patient-risk-monitoring-system/actions/workflows/ci.yml/badge.svg)](https://github.com/gunarithvick/icu-patient-risk-monitoring-system/actions/workflows/ci.yml)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-1511%20passing-brightgreen.svg)](tests/)
+[![Tests](https://img.shields.io/badge/tests-1530%20passing-brightgreen.svg)](tests/)
 
 > **Not a medical device.** This is a research and teaching project. No threshold here has been calibrated against a real ward, and the model is trained on a public retrospective cohort. See [Limitations](#limitations).
 
@@ -18,7 +18,7 @@ Three independent channels look at each bed, and one fusion layer combines them 
 | Channel | What it is | Weight | When it is missing |
 |---|---|---|---|
 | **NEWS2** | The Royal College of Physicians National Early Warning Score 2, implemented from the published table — seven parameters, both SpO₂ scales, the graded clinical response | 0.40 | Never: it needs no model and no camera |
-| **Model** | A histogram gradient-boosting classifier over 51 window features, returning `LOW`/`MEDIUM`/`HIGH` with calibrated probabilities | 0.45 | Reported as unavailable; the score is computed from the other channels |
+| **Model** | A histogram gradient-boosting classifier over 51 window features, returning `LOW`/`MEDIUM`/`HIGH` with probability estimates | 0.45 | Reported as unavailable; the score is computed from the other channels |
 | **Vision** | Patient presence, posture and motion from a camera — bed-exit and fall signals | 0.15 | Reported as unavailable; **never** treated as "all clear" |
 
 Two properties make this more than a weighted average:
@@ -33,23 +33,26 @@ Two properties make this more than a weighted average:
 
 ## Quickstart
 
-Three paths, in increasing order of setup. All three work with **no camera, no GPU, no dataset, and no trained model** — the system is designed to degrade visibly rather than fail.
+Four paths, in increasing order of setup. The local, Docker, and hosted dashboard paths work with **no camera, no GPU, no dataset, and no trained model** — the system is designed to degrade visibly rather than fail. Vercel hosts the API surface, not the Streamlit dashboard; that distinction is intentional and documented below.
 
 ### 1. Locally, with pip
 
 ```bash
-pip install -e ".[dev]"
+python -m venv .venv
+# Windows PowerShell: .venv\Scripts\Activate.ps1
+# macOS/Linux:        source .venv/bin/activate
+python -m pip install -e ".[dev]"
 ```
 
 The editable install keeps generated data beside this checkout. If you install a built wheel
 instead, data defaults to the directory from which you launch the command; set `ICU_PROJECT_ROOT`
 when you want an explicit data location.
 
-If Windows reports that `icu-monitor` is not found after a user-level install, use the
-equivalent module form: `python -m icu_monitor <command>`.
+The module form works consistently on Windows, macOS, and Linux and does not depend on the
+console-script directory being on `PATH`: `python -m icu_monitor <command>`.
 
 ```bash
-icu-monitor dashboard
+python -m icu_monitor dashboard
 ```
 
 The dashboard opens on <http://localhost:8501>. Nothing else is required: the ward is simulated, the camera falls back to a synthetic ward-bay scene, and the risk score runs on NEWS2 until a model exists.
@@ -57,13 +60,13 @@ The dashboard opens on <http://localhost:8501>. Nothing else is required: the wa
 Want a model? One command builds a dataset with the simulator and trains on it:
 
 ```bash
-icu-monitor etl --synthetic --stays 900 && icu-monitor train
+python -m icu_monitor etl --synthetic --stays 900 && python -m icu_monitor train
 ```
 
 No browser at all — print the ward to the terminal:
 
 ```bash
-icu-monitor tick --ticks 12
+python -m icu_monitor tick --ticks 12
 ```
 
 ### 2. With Docker
@@ -82,7 +85,11 @@ docker compose --profile setup run --rm bootstrap
 
 ### 3. Hosted Streamlit
 
-Point Streamlit Community Cloud at [`app.py`](app.py). That file exists only to put `src/` on `sys.path`, because hosted Streamlit runs a repository-root script and cannot install the project first. `.streamlit/config.toml` pins the dark theme the palette was validated against.
+Point Streamlit Community Cloud at [`app.py`](app.py). The committed [`requirements.txt`](requirements.txt) delegates runtime dependencies to `pyproject.toml`, while the root shim keeps the `src/` layout runnable in hosted and direct-checkout environments. `.streamlit/config.toml` pins the dark theme the palette was validated against.
+
+### 4. Vercel API
+
+This repository is Vercel-ready for the FastAPI API. It is **not** a Streamlit-on-Vercel deployment: Vercel's [Python runtime](https://vercel.com/docs/functions/runtimes/python) runs request-driven Functions, while the dashboard needs Streamlit's long-running interactive server and WebSocket session. Deploy the dashboard through Streamlit Community Cloud or Docker, and use Vercel for the public API if that split suits the project. See [Vercel deployment](#vercel) for the required database and environment configuration.
 
 ---
 
@@ -140,6 +147,12 @@ Acknowledgement is idempotent and audited: the first signature wins, a repeat ac
 
 The API is what makes this more than a screen: it is the integration point another system can score against, using the same NEWS2 implementation, the same fusion and the same model as the dashboard. Interactive schema at `/docs`.
 
+Canonical casing is deliberate: risk levels in JSON and stored model classes are uppercase
+(`LOW`, `MEDIUM`, `HIGH`, `CRITICAL`, `UNKNOWN`); clinical states and event slugs are
+lowercase (`stable`, `deteriorating`, `desaturation`); and human-facing labels use title
+case (`Low`, `Critical`, `Deteriorating`, `Desaturation episode`). Use the canonical forms
+in requests and configuration even where a parser accepts an equivalent case.
+
 ### Operational — unauthenticated by design
 
 | | |
@@ -187,7 +200,7 @@ Ticking is **pull-based**: the ward advances at most once per `ICU_TICK_SECONDS`
 Every `/api/v1` route sits behind `X-API-Key` **the moment `ICU_API_KEY` is set**; until then the ward API is open. That is fine on a laptop and wrong on any network interface, so:
 
 - `docker-compose.yml` publishes both ports on `127.0.0.1` only.
-- `icu-monitor serve` prints a warning when the key is unset.
+- `python -m icu_monitor serve` prints a warning when the key is unset.
 - The probes (`/health`, `/ready`, `/metrics`) stay unauthenticated on purpose so an orchestrator can scrape them.
 
 A test walks `create_app().routes` and asserts the split structurally, so a router added to the wrong list fails CI instead of quietly publishing the ward.
@@ -198,7 +211,7 @@ A test walks `create_app().routes` and asserts the split structurally, so a rout
 
 **These are the real held-out numbers, including the bad ones.** A dashboard that showed accuracy 0.57 without the class breakdown would be technically true and practically misleading, because the class that matters is 14 % of the data.
 
-`hist_gradient_boosting`, version `20260905-1809-hist_gradient_boosting`, 51 features, 8-hour windows. The reference figures below come from the training run that produced the local generated files `artifacts/metrics.json` and `artifacts/model_card.json`; those files are intentionally ignored by Git and are recreated by `icu-monitor train`.
+`hist_gradient_boosting`, version `20260907-1147-hist_gradient_boosting`, 51 features, 8-hour windows. The reference figures below come from the training run that produced the local generated files `artifacts/metrics.json` and `artifacts/model_card.json`; those files are intentionally ignored by Git and are recreated by `python -m icu_monitor train`.
 
 ### Headline
 
@@ -289,7 +302,7 @@ Four caveats that materially affect how these numbers should be read:
 - **6 static** — `age`, `sex_male`, `icu_type`, `weight_kg`, `height_cm`, `bmi`.
 - **3 derived** — `shock_index`, `pulse_pressure`, `map_estimate`.
 
-The artefact carries its own contract: feature names, class order, training date, dataset fingerprint and metrics are saved beside the estimator, and loading checks the saved feature list against the code's. A mismatch is *reported* — "feature schema drift, retrain with `icu-monitor train`" — rather than silently producing garbage. The cache is keyed on file mtime, so retraining is picked up without restarting.
+The artefact carries its own contract: feature names, class order, training date, dataset fingerprint and metrics are saved beside the estimator, and loading checks the saved feature list and class order against the code's. A mismatch refuses to load — "feature schema drift, retrain with `python -m icu_monitor train`" — rather than silently producing garbage. The cache is keyed on file mtime, so retraining is picked up without restarting.
 
 ---
 
@@ -315,6 +328,9 @@ Frame sources: `auto` (camera if one opens, else synthetic), `synthetic` (a gene
 Everything resolves through `Settings` ([`config.py`](src/icu_monitor/config.py)) — `ICU_`-prefixed environment variables or a `.env` file. Copy the annotated template:
 
 ```bash
+# Windows PowerShell:
+Copy-Item .env.example .env
+# macOS/Linux:
 cp .env.example .env
 ```
 
@@ -322,18 +338,19 @@ The values worth knowing:
 
 | Variable | Default | |
 |---|---|---|
-| `ICU_API_KEY` | *unset* | Unset = the ward API is open. Set it before exposing anything. |
+| `ICU_ENVIRONMENT` | `local` | `cloud` requires `ICU_API_KEY`; leave it as `local` for an open local demo only |
+| `ICU_API_KEY` | *unset* | Unset = the ward API is open in local/docker development. Cloud configuration refuses to start without it. |
 | `ICU_BED_COUNT` | 6 | 1–24 |
 | `ICU_TICK_SECONDS` | 2.0 | 0.25–30 |
-| `ICU_SIMULATION_SEED` | 20260905 | Fix it and the ward is reproducible |
+| `ICU_SIMULATION_SEED` | 20260905 | Fix it and the synthetic cohort and physiology are reproducible; live timestamps remain current by design |
 | `ICU_FRAME_SOURCE` / `ICU_DETECTOR` | `auto` / `auto` | `off` disables the channel entirely |
 | `ICU_DATABASE_URL` | *unset* | Unset = a SQLite file at `data/icu_monitor.db` (persists across restarts). Empty string = no persistence. SQLite gets WAL + foreign keys automatically |
-| `pip install -e ".[postgres]"` | — | Install the PostgreSQL driver before using a `postgresql+psycopg://...` URL |
+| PostgreSQL extra | — | Run `python -m pip install -e ".[postgres]"` before using a `postgresql+psycopg://...` URL |
 | `ICU_WEIGHT_NEWS2` / `_ML` / `_VISION` | 0.40 / 0.45 / 0.15 | Renormalised over reporting channels |
 | `ICU_LOG_LEVEL` | `INFO` | Read from the environment directly, so it works before config resolves |
 
 ```bash
-icu-monitor info
+python -m icu_monitor info
 ```
 
 prints the resolved settings and per-component readiness — the fastest way to find out what your environment actually gave you.
@@ -401,16 +418,16 @@ The layering rule is enforced by import direction: `core` imports nothing from t
 ## Development
 
 ```bash
-pip install -e ".[dev]"
+python -m pip install -e ".[dev]"
 ```
 
 | Command | |
 |---|---|
-| `pytest tests/` | The suite — **1 511 tests** |
+| `pytest tests/` | The suite — **1 530 tests** |
 | `pytest tests/ --cov` | With coverage |
 | `ruff check src tests` | Lint, including import order |
 | `ruff format src tests` | Format |
-| `make check` | Everything CI runs, in the same order |
+| `make check` | Local lint, formatting, and test checks |
 
 `make help` lists every target. On Windows, run the underlying commands directly — they are all in the Makefile in plain sight.
 
@@ -420,23 +437,23 @@ The suite is organised around behaviour that would be expensive to get wrong, no
 
 | Module | Tests | What it pins |
 |---|---|---|
-| `test_ui.py` | 208 | Every view rendered through Streamlit's own `AppTest`: that each control writes through to the engine, that a panel with nothing to draw says so in words instead of drawing an empty axis, and that no card is built from raw HTML a patient name could break out of |
+| `test_ui.py` | 209 | Every view rendered through Streamlit's own `AppTest`: that each control writes through to the engine, that a panel with nothing to draw says so in words instead of drawing an empty axis, and that no card is built from raw HTML a patient name could break out of |
 | `test_vision.py` | 177 | That the pipeline degrades in one direction only — camera → synthetic bay → off — and that a detector failure is a signal marked unavailable rather than an exception reaching the ward |
 | `test_types.py` | 158 | Every field bound and coercion on the domain objects, so a bad reading is refused at the boundary rather than 40 lines later |
 | `test_news2.py` | 109 | Every band boundary of the published table, both SpO₂ scales, the graded response strings, the "3 in a single parameter" rule |
 | `test_api.py` | 110 | Every route; the key gate, asserted *structurally* by walking the route table as well as by request; tolerant readiness; pull-based ticking; the paths that degrade |
-| `test_config.py` | 104 | Precedence between defaults, `.env`, and `ICU_*`; every derived path; that an absurd value is clamped rather than propagated |
+| `test_config.py` | 105 | Precedence between defaults, `.env`, and `ICU_*`; every derived path; that an absurd value is clamped rather than propagated |
 | `test_physionet.py` | 84 | The ETL end to end on a fabricated archive, and that the provenance it records beside the table is the provenance the model card gets |
 | `test_cli.py` | 68 | Every subcommand's exit code and the flags it forwards, so `--help` and behaviour cannot drift apart |
 | `test_simulation.py` | 64 | That the physiology is plausible and reproducible under a fixed seed, and that every event ramps and decays |
-| `test_storage.py` | 55 | Persistence, retention, and that a malformed stored row coerces to something benign instead of raising |
+| `test_storage.py` | 64 | Persistence, retention, migrations, and that a malformed stored row coerces to something benign instead of raising |
 | `test_fusion.py` | 54 | Renormalisation when channels are missing, each override rule's floor, and that ranking survives an override |
 | `test_pipeline.py` | 51 | That no patient appears on both sides of a split, asserted on the group arrays; and that class order is the project's, not the alphabet's |
 | `test_registry.py` | 45 | Schema-drift detection, the mtime cache, and that a missing artefact is a state rather than a crash |
-| `test_alerts.py` | 38 | Cooldown de-duplication, active vs open as different sets, idempotent acknowledgement |
+| `test_alerts.py` | 41 | Cooldown de-duplication, active vs open as different sets, idempotent acknowledgement |
 | `test_train.py` | 38 | That selection never fits on a held-out patient — recorded at the point of `fit` — and that the card cannot name a dataset it never saw |
 | `test_features.py` | 37 | The 51-column contract, in order, all-float, identical at train and serve |
-| `test_engine.py` | 34 | One tick, deterministically, on both the wall-clock and stepped-clock paths |
+| `test_engine.py` | 39 | One tick, deterministically, on both the wall-clock and stepped-clock paths |
 | `test_evaluate.py` | 30 | That a model which never predicts `HIGH` is exposed rather than flattered, and that an unmeasurable metric reports as `nan` |
 | `test_logging_setup.py` | 30 | That configuration is idempotent and owns only its own handlers, and that a cp1252 console gets UTF-8 rather than a traceback |
 | `test_labels.py` | 17 | The three-class acuity scheme and its boundaries |
@@ -452,8 +469,8 @@ Two things the UI tests deliberately do not assert: an exact score, and an exact
 [`.github/workflows/ci.yml`](.github/workflows/ci.yml) runs four jobs:
 
 1. **lint** — `ruff check` + `ruff format --check`.
-2. **test** — the suite on Python 3.10–3.13 on Linux, plus Windows and macOS legs. The Windows leg exists because the UTF-8 stream reconfiguration in `logging_setup.py` fixes a `UnicodeEncodeError` that only reproduces on a cp1252 console.
-3. **smoke** — builds a wheel, installs it, and *runs the thing*: `icu-monitor info`, a real tick whose JSON is validated, an ETL + train, then the live API probed over HTTP including a 401-without-key / 200-with-key assertion.
+2. **test** — the suite on Python 3.10–3.14 on Linux, plus Windows and macOS legs. The Windows leg exists because the UTF-8 stream reconfiguration in `logging_setup.py` fixes a `UnicodeEncodeError` that only reproduces on a cp1252 console.
+3. **smoke** — builds a wheel, installs it, and *runs the thing*: `python -m icu_monitor info`, a real tick whose JSON is validated, an ETL + train, then the live API probed over HTTP including a 401-without-key / 200-with-key assertion.
 4. **docker** — builds the image, waits for the container's own healthcheck to go green, and verifies it runs as a non-root user.
 
 A green suite says the units agree with each other. Only job 3 says the install works.
@@ -461,6 +478,49 @@ A green suite says the units agree with each other. Only job 3 says the install 
 ---
 
 ## Deployment
+
+### Vercel
+
+Vercel deploys the FastAPI application from the `icu_monitor.api.main:app` entry point configured in [`pyproject.toml`](pyproject.toml). The committed [`vercel.json`](vercel.json) limits function duration and excludes tests, local data, model artefacts, Docker files, and other development-only content from the function bundle. The committed [`.python-version`](.python-version) selects Python 3.14, which is supported by Vercel's [Python runtime](https://vercel.com/docs/functions/runtimes/python).
+
+Vercel is an appropriate target for the stateless scoring endpoints and request-driven API, as described in Vercel's [FastAPI deployment guide](https://vercel.com/kb/guide/ship-a-fastapi-app-on-vercel). It is not the persistence or dashboard host for this project:
+
+- Vercel Functions have a read-only filesystem apart from temporary `/tmp` space. Do **not** use the default SQLite path as production storage there; use an external PostgreSQL database and set `ICU_DATABASE_URL` to its connection URL. If the database is unavailable, this application deliberately falls back to in-memory operation, which is useful for a demo but not durable across function instances.
+- Vercel Functions are request-driven and can scale across instances. The ward therefore advances when API traffic requests a snapshot; it is not a permanently running background monitor. The external ledger is the shared source of truth, but live in-memory engine state is still per warm function instance.
+- No camera device is available in a Vercel Function. Set `ICU_FRAME_SOURCE=off` and `ICU_DETECTOR=off`; the API will report vision as unavailable instead of probing hardware.
+- Keep `ICU_API_KEY` set in Vercel. `/health`, `/ready`, and `/metrics` remain public for probes; all `/api/v1` routes require `X-API-Key` when the key is configured.
+- No trained model artefact is required. The API starts on NEWS2 alone. If a model is used, package a trusted artefact deliberately and do not accept uploaded joblib files.
+
+#### Vercel setup
+
+1. Push this repository to GitHub and import it into Vercel. Keep the project root at the repository root; do not set a separate build command or output directory.
+2. Create a PostgreSQL database that is reachable from Vercel and run the deployment with the `psycopg` extra supplied by [`requirements.txt`](requirements.txt).
+3. Add these Production environment variables in Vercel:
+
+   ```text
+   ICU_ENVIRONMENT=cloud
+   ICU_API_KEY=<long-random-secret>
+   ICU_DATABASE_URL=postgresql+psycopg://<user>:<password>@<host>:<port>/<database>
+   ICU_CORS_ORIGINS=["https://<your-vercel-domain>"]
+   ICU_VITALS_SOURCE=simulator
+   ICU_FRAME_SOURCE=off
+   ICU_DETECTOR=off
+   ICU_API_WARMUP_TICKS=0
+   ICU_SIMULATION_SEED=20260905
+   ```
+
+   Do not commit these values. Add them through Vercel's Environment Variables settings or the Vercel CLI.
+4. Deploy, then verify the public probes:
+
+   ```bash
+   curl https://<your-vercel-domain>/health
+   curl https://<your-vercel-domain>/ready
+   curl -H "X-API-Key: <long-random-secret>" https://<your-vercel-domain>/api/v1/ward
+   ```
+
+   The interactive API documentation is at `https://<your-vercel-domain>/docs`. A healthy deployment should show `database: connected`, `vision: off` or unavailable, and a `model` component that is either loaded or explicitly unavailable while NEWS2 remains active.
+
+For local Vercel-shaped testing, install the Vercel CLI with `npm install --global vercel`, run `vercel dev`, and exercise the same `/health`, `/ready`, `/docs`, and authenticated `/api/v1/ward` URLs before creating a production deployment. Vercel's Python runtime currently supports Python 3.12, 3.13, and 3.14; this project pins 3.14 for the Vercel deployment while CI continues to test the supported package range. See Vercel's [runtime filesystem and limits](https://vercel.com/docs/functions/runtimes) before adding any new persistent or long-running feature.
 
 ### Docker Compose
 
@@ -500,10 +560,11 @@ internal bind address.
 
 This is the part most demo projects get wrong, so it is stated plainly:
 
-- **`ICU_API_KEY` unset leaves every `/api/v1` route open.** The gate is a no-op until a key exists. This is convenient locally and wrong anywhere else.
+- **`ICU_API_KEY` unset leaves every `/api/v1` route open only in local/docker development.** `ICU_ENVIRONMENT=cloud` refuses to start without a key, so a Vercel deployment cannot accidentally publish the ward API unauthenticated.
 - The published Compose ports are `127.0.0.1`-bound for exactly that reason. Set a key **before** removing the prefix or putting either service behind a proxy.
 - `/health`, `/ready`, `/metrics` and `/` stay unauthenticated on purpose — an orchestrator's probe cannot carry a secret, and `/metrics` exposes counters, not patient rows.
 - There is no TLS here, no user model, and no audit trail beyond the alert ledger. Terminate TLS at a reverse proxy and treat the API as a trusted-network service.
+- Model artefacts use joblib serialization and must be treated as executable, trusted-local files. Do not accept or load an artefact uploaded by an untrusted user.
 - The data is simulated. Feed it real patients and every one of the above becomes a compliance question, not a configuration one.
 
 ---
@@ -521,8 +582,8 @@ The first version was a single-machine demo. It worked on the machine it was wri
 | Model | Random Forest on 3 features | HistGradientBoosting on 51, selected by patient-disjoint CV against a random-forest baseline |
 | Evaluation | a single random split | grouped splits, per-class metrics, calibration bins, a written model card |
 | Scoring | ML only | NEWS2 + ML + vision, weighted and renormalised, with clinical override floors |
-| Config | constants in source | `ICU_`-prefixed settings, validated, with `icu-monitor info` to show what resolved |
-| Tests | none | 1 511, including 208 that drive the dashboard itself |
+| Config | constants in source | `ICU_`-prefixed settings, validated, with `python -m icu_monitor info` to show what resolved |
+| Tests | none | 1 530, including 209 that drive the dashboard itself |
 | Deploy | run the script | wheel, Docker image, Compose stack, hosted Streamlit, 4-job CI |
 
 The most important change is not in that table. In v1, a missing camera, a missing model file, or a bad vital ended the process. In v2 each of those is a degraded mode that the system reports and keeps running through — because a monitor that stops monitoring when one input fails is worse than no monitor at all.

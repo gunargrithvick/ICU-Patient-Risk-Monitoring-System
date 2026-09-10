@@ -303,7 +303,7 @@ def render(snapshot: WardSnapshot) -> None:
     with ctrl_col:
         _controls(patient_id)
 
-    patient_alerts = [a for a in engine.alerts.history if a.patient_id == patient_id]
+    patient_alerts = list(app_state.persisted_alerts(patient_id=patient_id))
     st.markdown("#### Alerts for this bed")
     if not patient_alerts:
         ui.empty_state("No alerts raised for this patient.", icon="✓")

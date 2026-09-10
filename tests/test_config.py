@@ -74,6 +74,14 @@ def test_the_database_url_is_a_url_not_a_windows_path(tmp_path: Path) -> None:
     assert "\\" not in cfg.database_url
 
 
+def test_cloud_environment_requires_an_api_key(tmp_path: Path) -> None:
+    with pytest.raises(ValidationError, match="api_key must be set"):
+        Settings(project_root=tmp_path, environment="cloud")
+    assert (
+        Settings(project_root=tmp_path, environment="cloud", api_key="secret").api_key == "secret"
+    )
+
+
 def test_an_explicit_data_directory_is_kept_and_its_children_follow_it(tmp_path: Path) -> None:
     cfg = Settings(project_root=tmp_path, data_dir=tmp_path / "mounted")
     assert cfg.data_dir == tmp_path / "mounted"
@@ -206,7 +214,11 @@ def test_a_value_past_a_field_bound_is_refused(tmp_path: Path, field: str, value
 
 @pytest.mark.parametrize(("field", "value"), AT_THE_EDGE)
 def test_the_declared_edge_is_inside_the_bound(tmp_path: Path, field: str, value: object) -> None:
-    cfg = Settings(project_root=tmp_path, **{field: value})
+    related = {
+        "news2_high_threshold": {"news2_medium_threshold": 1},
+        "composite_high_threshold": {"composite_medium_threshold": 1.0},
+    }
+    cfg = Settings(project_root=tmp_path, **related.get(field, {}), **{field: value})
     assert getattr(cfg, field) == value
 
 

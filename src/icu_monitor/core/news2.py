@@ -201,7 +201,9 @@ def _score_spo2_scale2(value: float | None, on_oxygen: bool) -> tuple[int, str]:
     return score_in_bands(value, bands, precision=RECORDING_PRECISION["spo2"])
 
 
-def _consciousness_score(level: Consciousness) -> tuple[int, str]:
+def _consciousness_score(level: Consciousness | None) -> tuple[int, str]:
+    if level is None:
+        return 0, "not measured"
     if level is Consciousness.ALERT:
         return 0, "Alert"
     return 3, level.label
@@ -316,7 +318,7 @@ def calculate_news2(vitals: Vitals, *, spo2_scale: int = 1) -> NEWS2Result:
         ParameterScore(
             parameter="consciousness",
             display_name="Consciousness (ACVPU)",
-            value=vitals.consciousness.label,
+            value=vitals.consciousness.label if vitals.consciousness else None,
             unit="",
             score=acvpu_score,
             band=acvpu_band,

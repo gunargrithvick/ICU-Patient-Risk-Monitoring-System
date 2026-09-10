@@ -10,10 +10,11 @@ from __future__ import annotations
 
 import os
 from functools import lru_cache
+from itertools import pairwise
 from pathlib import Path
 from typing import Literal
 
-from pydantic import Field, field_validator
+from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # --------------------------------------------------------------------------------------
@@ -122,7 +123,7 @@ class Settings(BaseSettings):
     # -- API ---------------------------------------------------------------------------
     # Keep local runs private. Containers and managed hosts override this explicitly.
     api_host: str = "127.0.0.1"
-    api_port: int = 8000
+    api_port: int = Field(default=8000, ge=1, le=65535)
     api_base_url: str = "http://localhost:8000"
     cors_origins: list[str] = Field(default_factory=lambda: ["*"])
     # Unset means the API is open. That is deliberate for a local demo and unacceptable
@@ -152,6 +153,30 @@ class Settings(BaseSettings):
         if self.database_url is None:
             db_path = (self.data_dir / "icu_monitor.db").as_posix()
             object.__setattr__(self, "database_url", f"sqlite:///{db_path}")
+
+    @model_validator(mode="after")
+    def _validate_ordered_thresholds(self) -> Settings:
+        """Reject threshold combinations that would make the risk ladder contradictory."""
+        ladders = (
+            (
+                ("news2_medium_threshold", self.news2_medium_threshold),
+                ("news2_high_threshold", self.news2_high_threshold),
+            ),
+            (
+                ("composite_medium_threshold", self.composite_medium_threshold),
+                ("composite_high_threshold", self.composite_high_threshold),
+                ("composite_critical_threshold", self.composite_critical_threshold),
+            ),
+        )
+        for ladder in ladders:
+            for (left_name, left), (right_name, right) in pairwise(ladder):
+                if left >= right:
+                    raise ValueError(f"{left_name} must be lower than {right_name}")
+        if self.window_stride_hours > self.window_hours:
+            raise ValueError("window_stride_hours must not exceed window_hours")
+        if self.environment == "cloud" and not self.api_key:
+            raise ValueError("api_key must be set when environment is cloud")
+        return self
 
     # -- Convenience accessors ---------------------------------------------------------
     def with_overrides(self, **changes: object) -> Settings:

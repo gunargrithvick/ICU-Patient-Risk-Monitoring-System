@@ -17,6 +17,8 @@ classifiers = [
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
 
@@ -55,6 +57,9 @@ icu-monitor = "icu_monitor.cli:main"
 [project.urls]
 Homepage = "https://github.com/gunarithvick/icu-patient-risk-monitoring-system"
 Issues = "https://github.com/gunarithvick/icu-patient-risk-monitoring-system/issues"
+
+[tool.vercel]
+entrypoint = "icu_monitor.api.main:app"
 
 [tool.setuptools.packages.find]
 where = ["src"]
